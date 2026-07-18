@@ -60,4 +60,9 @@ nav:
   - Home: index.md
   - Getting Started: getting-started.md
   - API Reference: reference.md
+  - Design:
+      - Decision Log: design/decisions.md
+      - Prototype Design: design/prototype-design.md
+      - Map Layout: design/map-layout.md
+      - Architecture: design/architecture.md
   - Contributing: contributing.md

@@ -23,6 +23,27 @@ Without Just: replace `just <cmd>` with the corresponding `uv run` commands
 in the `justfile`. Run a single test with
 `uv run pytest tests/test_<module>.py::test_<name>`.
 
+## What PeerPort Is
+
+A self-hosted life-sim: AI personas ("Peers") live autonomously in a small
+pixel-art cyber port town; the user ("Keeper") watches and chats through a
+browser UI. FastAPI + WebSocket backend, PixiJS frontend (no Node build
+chain), SQLite persistence, OpenAI Responses API.
+
+**Read before designing or implementing anything:**
+
+- `requirements.md` — the product spec; it outranks every other document
+- `docs/design/decisions.md` — append-only design decision log (D-NNN)
+- `docs/design/prototype-design.md` — UI/visual spec (tokens, wireframes)
+- `docs/design/map-layout.md` — the 40×30 world map and waypoint graph
+- `personas/*.md` — persona definitions (schema in requirements §3.2)
+- `locales/en.json` / `locales/ja.json` — all UI copy; never hardcode
+  user-facing strings
+
+Design/UI/worldview/copy work must go through the `peerport-designer`
+skill (`.claude/skills/peerport-designer/`), which enforces terminology,
+tone, and the decision log.
+
 ## Architecture
 
 ```
