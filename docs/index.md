@@ -1,4 +1,4 @@
-# my-package
+# peerport
 
 A short description of what this library does.
 
@@ -7,19 +7,19 @@ A short description of what this library does.
 === "pip"
 
     ```bash
-    pip install my-package
+    pip install peerport
     ```
 
 === "uv"
 
     ```bash
-    uv add my-package
+    uv add peerport
     ```
 
 ## Quick Example
 
 ```python
-from my_package import add
+from peerport import add
 
 result = add(1, 2)
 print(result)  # 3

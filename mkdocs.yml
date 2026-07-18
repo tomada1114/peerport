@@ -1,8 +1,8 @@
-site_name: my-package
+site_name: peerport
 site_description: A short description of the project.
-site_url: https://your-username.github.io/my-package
-repo_url: https://github.com/your-username/my-package
-repo_name: your-username/my-package
+site_url: https://tomada1114.github.io/peerport
+repo_url: https://github.com/tomada1114/peerport
+repo_name: tomada1114/peerport
 edit_uri: edit/main/docs/
 
 theme:

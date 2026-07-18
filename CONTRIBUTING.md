@@ -50,7 +50,7 @@ uv run ruff check --fix .
 uv run ruff format .
 uv run ruff check .
 uv run mypy src scripts tests
-uv run pytest --cov=my_package --cov-branch --cov-report=term-missing:skip-covered --cov-fail-under=80
+uv run pytest --cov=peerport --cov-branch --cov-report=term-missing:skip-covered --cov-fail-under=80
 uv build && uv run python scripts/smoke_test.py
 ```
 
