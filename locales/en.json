@@ -1,0 +1,60 @@
+{
+  "tab.mate": "Mate",
+  "tab.mail": "Mail",
+  "tab.signal_tower": "Signal Tower",
+  "tab.logbook": "Logbook",
+  "tab.notes": "Notes",
+  "tab.settings": "Settings",
+
+  "hud.day": "Day {n}",
+  "hud.band.morning": "Morning",
+  "hud.band.day": "Day",
+  "hud.band.dusk": "Dusk",
+  "hud.band.night": "Night",
+  "hud.pause": "Pause",
+  "hud.resume": "Resume",
+  "hud.spend_today": "{amount} today",
+
+  "mate.presence.at": "at {place}",
+  "mate.presence.talking": "talking with {peer}",
+  "mate.input.placeholder": "Message {mate}…",
+  "mate.empty": "The line to your Mate is open. Say hello.",
+  "mate.filed_note": "Filed to Notes → \"{title}\"",
+
+  "mail.empty": "No letters yet. News from beyond the harbor takes time.",
+  "mail.reply.placeholder": "Write back…",
+  "mail.send": "Send",
+
+  "board.empty": "The board is clear. Post something — the whole port reads it.",
+  "board.compose.placeholder": "Pin a notice to the board…",
+  "board.post": "Post",
+  "board.author.keeper": "Keeper",
+
+  "logbook.empty": "The logbook opens with today. The harbor's story starts here.",
+  "logbook.while_away": "While you were away",
+  "logbook.chronicle": "Chronicle",
+
+  "notes.empty": "The shelf is empty. Ask {mate} to file your first note.",
+  "notes.filed_by": "filed by {mate}",
+  "notes.delete": "Delete",
+  "notes.delete.confirm": "Remove this note for good?",
+
+  "state.fog": "Fog's rolled in — the port can't reach the outside right now.",
+  "state.fog.detail": "API error ({status}). Retrying automatically.",
+  "state.reconnecting": "signal lost… reconnecting",
+  "state.low_power": "Running dark to save power — the port slows down a little.",
+  "state.hard_stop": "The port has dropped anchor for today — spending hit the hard limit. Raise it in Settings to set sail again.",
+  "state.paused": "The world is paused.",
+
+  "onboarding.locale.title": "Choose your language",
+  "onboarding.keeper_name.title": "The port needs a keeper. What's your name?",
+  "onboarding.api_key.title": "Set your OpenAI API key",
+
+  "popup.kind.mate": "Mate",
+  "popup.kind.peer": "Peer",
+  "popup.kind.drifter": "Drifter",
+  "popup.ties": "Ties",
+  "popup.lately": "Lately",
+
+  "date.world_day": "Day {n}, {band}"
+}
