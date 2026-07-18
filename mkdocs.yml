@@ -64,4 +64,5 @@ nav:
       - Decision Log: design/decisions.md
       - Prototype Design: design/prototype-design.md
       - Map Layout: design/map-layout.md
+      - Architecture: design/architecture.md
   - Contributing: contributing.md
