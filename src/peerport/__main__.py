@@ -29,10 +29,12 @@ from peerport.db import (
 )
 from peerport.errors import ConfigError, MapDataError, PersonaValidationError
 from peerport.llm.budget import BudgetGuard
-from peerport.llm.client import LLMClient, OpenAIStreamingTransport
+from peerport.llm.client import LLMClient, OpenAIStreamingTransport, OpenAITransport
 from peerport.llm.prompts import build_fixed_prefix
 from peerport.mate.chat import MateChat
 from peerport.memory.stream import MemoryStream, OpenAIEmbedder
+from peerport.peers.converse import ConversationEngine
+from peerport.peers.decide import DecisionEngine, make_board_hooks
 from peerport.peers.personas import load_personas
 from peerport.server.app import create_app
 from peerport.world.clock import WorldClock
@@ -152,6 +154,54 @@ def _wire_mate_chat(
     )
 
 
+def _wire_peer_society(
+    app: FastAPI,
+    config: Config,
+    conn: sqlite3.Connection,
+    personas: dict[str, Persona],
+    simulation: Simulation,
+) -> None:
+    """Attach the decision and conversation engines when a key exists."""
+    if not os.environ.get("OPENAI_API_KEY"):
+        return
+    budget = BudgetGuard(conn, config.budget.soft_cap_usd, config.budget.hard_cap_usd)
+    llm = LLMClient(
+        config=config, conn=conn, budget=budget, transport=OpenAITransport()
+    )
+    memory = MemoryStream(conn, OpenAIEmbedder())
+    engine = DecisionEngine(
+        llm=llm,
+        sim=simulation,
+        personas=personas,
+        rng=simulation.rng,
+    )
+    conversations = ConversationEngine(
+        llm=llm,
+        sim=simulation,
+        memory=memory,
+        broadcaster=app.state.broadcaster,
+        conn=conn,
+        personas=personas,
+    )
+
+    async def on_talk(speaker: str, target: str) -> None:
+        started = await conversations.start(speaker, target)
+        if started:
+            await engine.trigger_redecision([target])
+
+    post_hook, read_hook = make_board_hooks(
+        conn,
+        memory,
+        app.state.broadcaster,
+        now_world=lambda: simulation.state.world_seconds,
+    )
+    engine.on_talk = on_talk
+    engine.on_post_board = post_hook
+    engine.on_read_board = read_hook
+    app.state.decision_engine = engine
+    app.state.conversation_engine = conversations
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """CLI entry point (console script `peerport`).
 
@@ -195,7 +245,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
 
     app = create_app(config, simulation=simulation)
+    app.state.db_conn = conn
+    app.state.personas = personas
     _wire_mate_chat(app, config, conn, personas, simulation)
+    _wire_peer_society(app, config, conn, personas, simulation)
     uvicorn.run(
         app,
         host="127.0.0.1",

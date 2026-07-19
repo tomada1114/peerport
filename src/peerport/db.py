@@ -11,6 +11,7 @@ schema.
 
 from __future__ import annotations
 
+import json
 import logging
 import sqlite3
 from dataclasses import dataclass
@@ -121,6 +122,8 @@ _MIGRATIONS: tuple[str, ...] = (
 _SCHEMA_UPGRADES = (
     ("usage_log", "role", "TEXT"),
     ("usage_log", "status", "TEXT"),
+    ("relationships", "last_delta", "INTEGER"),
+    ("board_posts", "created_at", "INTEGER"),
 )
 
 
@@ -313,3 +316,134 @@ def insert_usage(conn: sqlite3.Connection, record: UsageRecord) -> None:
                 record.status,
             ),
         )
+
+
+@dataclass(frozen=True, slots=True)
+class Relationship:
+    """A peer pair's relationship state (requirements §4.2)."""
+
+    score: int = 0
+    label: str = ""
+    last_delta: int = 0
+
+
+def _pair_key(a: str, b: str) -> tuple[str, str]:
+    return (a, b) if a < b else (b, a)
+
+
+def get_relationship(conn: sqlite3.Connection, a: str, b: str) -> Relationship:
+    """Read the pair's relationship; a neutral default when none exists."""
+    pa, pb = _pair_key(a, b)
+    row = conn.execute(
+        "SELECT score, label, last_delta FROM relationships"
+        " WHERE peer_a = ? AND peer_b = ?",
+        (pa, pb),
+    ).fetchone()
+    if row is None:
+        return Relationship()
+    return Relationship(score=row[0], label=row[1] or "", last_delta=row[2] or 0)
+
+
+def save_relationship(
+    conn: sqlite3.Connection, pair: tuple[str, str], relationship: Relationship
+) -> None:
+    """Upsert the pair's relationship (stored once with peer_a < peer_b)."""
+    pa, pb = _pair_key(*pair)
+    with conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO relationships"
+            " (peer_a, peer_b, score, label, last_delta, updated_ts)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                pa,
+                pb,
+                relationship.score,
+                relationship.label,
+                relationship.last_delta,
+                int(datetime.now(UTC).timestamp()),
+            ),
+        )
+
+
+def list_relationships(
+    conn: sqlite3.Connection, peer_id: str
+) -> list[tuple[str, Relationship]]:
+    """All relationships involving *peer_id* as (other_peer, relationship)."""
+    rows = conn.execute(
+        "SELECT peer_a, peer_b, score, label, last_delta FROM relationships"
+        " WHERE peer_a = ? OR peer_b = ?",
+        (peer_id, peer_id),
+    ).fetchall()
+    return [
+        (
+            pb if pa == peer_id else pa,
+            Relationship(score=score, label=label or "", last_delta=delta or 0),
+        )
+        for pa, pb, score, label, delta in rows
+    ]
+
+
+def insert_event(
+    conn: sqlite3.Connection,
+    *,
+    ts_world: int,
+    kind: str,
+    actors: list[str],
+    payload: str,
+) -> None:
+    """Append one row to the full-history `events` table."""
+    with conn:
+        conn.execute(
+            "INSERT INTO events (ts_world, ts_real, type, actors, payload)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (
+                ts_world,
+                int(datetime.now(UTC).timestamp()),
+                kind,
+                json.dumps(actors),
+                payload,
+            ),
+        )
+
+
+def insert_board_post(
+    conn: sqlite3.Connection,
+    *,
+    author_id: str,
+    body: str,
+    ts_world: int,
+    created_at: int | None = None,
+) -> int:
+    """Insert one Signal Tower board post; returns the new post id."""
+    timestamp = (
+        created_at if created_at is not None else int(datetime.now(UTC).timestamp())
+    )
+    with conn:
+        cursor = conn.execute(
+            "INSERT INTO board_posts (author_id, body, ts_world, created_at)"
+            " VALUES (?, ?, ?, ?)",
+            (author_id, body, ts_world, timestamp),
+        )
+    return int(cursor.lastrowid or 0)
+
+
+def list_board_posts(
+    conn: sqlite3.Connection, limit: int | None = None
+) -> list[dict[str, object]]:
+    """Board posts, strictly newest first (flat list, no threading)."""
+    sql = (
+        "SELECT id, author_id, body, ts_world, created_at FROM board_posts"
+        " ORDER BY created_at DESC, id DESC"
+    )
+    if limit is not None:
+        sql += f" LIMIT {int(limit)}"
+    return [
+        {
+            "id": row[0],
+            "author_id": row[1],
+            "body": row[2],
+            "ts_world": row[3],
+            "created_at": row[4],
+        }
+        for row in conn.execute(sql).fetchall()
+    ]
