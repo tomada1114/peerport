@@ -112,6 +112,25 @@ class TestBoot:
 
 
 class TestMain:
+    """Tests covering the full CLI boot sequence.
+
+    `uvicorn.run()` opens a real network listener and blocks forever, so
+    every test here mocks it — per the testing rules, boundaries like
+    network I/O are exactly what should be mocked, not the unit under test.
+    """
+
+    @pytest.fixture(autouse=True)
+    def uvicorn_run_calls(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> list[dict[str, object]]:
+        calls: list[dict[str, object]] = []
+
+        def _fake_run(app: object, **kwargs: object) -> None:
+            calls.append({"app": app, **kwargs})
+
+        monkeypatch.setattr("peerport.__main__.uvicorn.run", _fake_run)
+        return calls
+
     def test_returns_zero_on_successful_boot(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -154,3 +173,19 @@ class TestMain:
         finally:
             reopened.close()
         assert count == 0
+
+    def test_starts_uvicorn_on_the_configured_port(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        uvicorn_run_calls: list[dict[str, object]],
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "config.toml").write_text(
+            "[server]\nport = 9001\n", encoding="utf-8"
+        )
+
+        main([])
+
+        assert len(uvicorn_run_calls) == 1
+        assert uvicorn_run_calls[0]["port"] == 9001

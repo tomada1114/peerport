@@ -1,9 +1,9 @@
-"""CLI entry point: argument parsing and the data-layer boot sequence.
+"""CLI entry point: argument parsing and the full boot sequence.
 
 Per `docs/design/architecture.md` §7, boot proceeds: load config → open DB
-→ rotate backups → (persona/map loading and server startup are wired in
-later issues #10-#12). `--fresh` archives the existing database before
-starting a brand-new world.
+→ rotate backups → (persona/map loading is wired in by later issues
+#11-#12) → start the FastAPI/uvicorn server. `--fresh` archives the
+existing database before starting a brand-new world.
 """
 
 from __future__ import annotations
@@ -12,6 +12,8 @@ import argparse
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+import uvicorn
 
 from peerport.config import Config, load_config
 from peerport.db import (
@@ -22,6 +24,7 @@ from peerport.db import (
     rotate_backups,
 )
 from peerport.errors import ConfigError
+from peerport.server.app import create_app
 
 if TYPE_CHECKING:
     import sqlite3
@@ -110,7 +113,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     _setup_logging(debug=args.debug)
 
     try:
-        _config, conn = boot(
+        config, conn = boot(
             fresh=args.fresh,
             data_dir=Path("data"),
             config_path=Path("config.toml"),
@@ -118,7 +121,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     except SystemExit as exc:
         return int(exc.code) if isinstance(exc.code, int) else 1
 
+    # DB persistence of live world state is wired in by #13+; #10 only
+    # establishes the HTTP/WS server over an in-memory world.
     conn.close()
+
+    app = create_app(config)
+    uvicorn.run(
+        app,
+        host="127.0.0.1",
+        port=config.server.port,
+        log_level="debug" if args.debug else "info",
+    )
     return 0
 
 

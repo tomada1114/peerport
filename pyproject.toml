@@ -21,6 +21,10 @@ classifiers = [
     "Programming Language :: Python :: 3.14",
     "Typing :: Typed",
 ]
+dependencies = [
+    "fastapi>=0.137.1",
+    "uvicorn>=0.49.0",
+]
 
 [project.urls]
 Homepage = "https://github.com/tomada1114/peerport"
@@ -33,7 +37,14 @@ Changelog = "https://github.com/tomada1114/peerport/blob/main/CHANGELOG.md"
 peerport = "peerport.__main__:main"
 
 [dependency-groups]
-dev = ["mypy>=2.1.0", "pre-commit>=3.7", "pytest>=8.0", "pytest-cov>=7.1.0", "ruff>=0.11"]
+dev = [
+    "httpx>=0.28.1",
+    "mypy>=2.1.0",
+    "pre-commit>=3.7",
+    "pytest>=8.0",
+    "pytest-cov>=7.1.0",
+    "ruff>=0.11",
+]
 docs = ["mkdocs-material>=9.7.6", "mkdocstrings[python]>=1.0.4"]
 
 # --------------------------------------------------------------------------- #
