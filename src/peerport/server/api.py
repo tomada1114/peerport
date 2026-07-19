@@ -16,6 +16,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from peerport.config import VALID_LOCALES
+from peerport.db import insert_board_post, list_board_posts, list_relationships
 
 router = APIRouter(prefix="/api")
 
@@ -49,9 +50,34 @@ async def post_chat(request: Request) -> JSONResponse:
 
 
 @router.post("/board")
-async def post_board() -> JSONResponse:
-    """Post to the Signal Tower bulletin board. See #21."""
-    return _stub()
+async def post_board(request: Request) -> JSONResponse:
+    """Keeper posts to the Signal Tower board; peers re-decide (#21)."""
+    conn = getattr(request.app.state, "db_conn", None)
+    if conn is None:
+        return _stub()
+    body = await request.json()
+    text = str(body.get("body", "")).strip()
+    if not text:
+        return JSONResponse(status_code=422, content={"detail": "empty post"})
+    simulation = getattr(request.app.state, "simulation", None)
+    ts_world = simulation.state.world_seconds if simulation is not None else 0
+    post_id = insert_board_post(conn, author_id="keeper", body=text, ts_world=ts_world)
+    await request.app.state.broadcaster.publish(
+        {"t": "event", "kind": "board_post", "author": "keeper"}
+    )
+    engine = getattr(request.app.state, "decision_engine", None)
+    if engine is not None:
+        await engine.trigger_redecision()
+    return JSONResponse(content={"ok": True, "id": post_id})
+
+
+@router.get("/board")
+async def get_board(request: Request) -> JSONResponse:
+    """List board posts, newest first (#21)."""
+    conn = getattr(request.app.state, "db_conn", None)
+    if conn is None:
+        return _stub()
+    return JSONResponse(content={"posts": list_board_posts(conn)})
 
 
 @router.post("/mail/{mail_id}/reply")
@@ -127,9 +153,49 @@ async def post_settings() -> JSONResponse:
 
 
 @router.get("/peer/{peer_id}")
-async def get_peer(peer_id: str) -> JSONResponse:
-    """Fetch popup data for a peer. See #20."""
-    return _stub(peer_id=peer_id)
+async def get_peer(request: Request, peer_id: str) -> JSONResponse:
+    """Popup data: identity, mood, ties (no numeric scores), lately (#20)."""
+    conn = getattr(request.app.state, "db_conn", None)
+    personas = getattr(request.app.state, "personas", None)
+    if conn is None or personas is None:
+        return _stub(peer_id=peer_id)
+    persona = personas.get(peer_id)
+    if persona is None:
+        return JSONResponse(status_code=404, content={"detail": "unknown peer"})
+    engine = getattr(request.app.state, "decision_engine", None)
+    mood = engine.last_mood(peer_id) if engine is not None else None
+    ties = [
+        {
+            "peer": other,
+            "label": relationship.label,
+            "trend": (
+                "up"
+                if relationship.last_delta > 0
+                else "down"
+                if relationship.last_delta < 0
+                else "flat"
+            ),
+        }
+        for other, relationship in list_relationships(conn, peer_id)
+    ]
+    lately = [
+        row[0]
+        for row in conn.execute(
+            "SELECT text FROM memories WHERE peer_id = ? ORDER BY id DESC LIMIT 3",
+            (peer_id,),
+        ).fetchall()
+    ]
+    return JSONResponse(
+        content={
+            "id": persona.id,
+            "name": persona.name,
+            "kind": persona.kind,
+            "sprite": persona.sprite,
+            "mood": mood,
+            "ties": ties,
+            "lately": lately,
+        }
+    )
 
 
 @router.get("/onboarding")

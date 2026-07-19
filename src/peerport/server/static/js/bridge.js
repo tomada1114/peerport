@@ -68,6 +68,9 @@ export class Bridge {
       if (tab.id === "mate") {
         this._buildMateBody(body);
       }
+      if (tab.id === "signal_tower") {
+        this._buildBoardBody(body);
+      }
       this.bodies[tab.id] = body;
       this.root.append(body);
     }
@@ -148,6 +151,110 @@ export class Bridge {
       : t("mate.presence.at", { place: frame.place ?? "" });
   }
 
+  _buildBoardBody(body) {
+    this.boardComposer = document.createElement("textarea");
+    this.boardComposer.className = "chat-input";
+    this.boardComposer.rows = 2;
+    this.boardComposer.placeholder = t("board.compose.placeholder");
+    const postButton = document.createElement("button");
+    postButton.className = "hud-button";
+    postButton.textContent = t("board.post");
+    postButton.addEventListener("click", () => this._submitBoardPost());
+    this.boardList = document.createElement("div");
+    this.boardList.className = "board-list";
+    body.append(this.boardComposer, postButton, this.boardList);
+    window.addEventListener("peerport:board-updated", () => this.refreshBoard());
+  }
+
+  async _submitBoardPost() {
+    const text = this.boardComposer.value.trim();
+    if (!text) {
+      this.boardComposer.classList.add("invalid");
+      return;
+    }
+    this.boardComposer.classList.remove("invalid");
+    const response = await fetch("/api/board", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ body: text }),
+    });
+    if (response.ok) {
+      this.boardComposer.value = "";
+      await this.refreshBoard();
+    }
+  }
+
+  async refreshBoard() {
+    const response = await fetch("/api/board");
+    if (!response.ok) {
+      return;
+    }
+    const data = await response.json();
+    this.boardList.replaceChildren();
+    if (!data.posts.length) {
+      const empty = document.createElement("p");
+      empty.className = "empty-note";
+      empty.textContent = t("board.empty");
+      this.boardList.append(empty);
+      return;
+    }
+    for (const post of data.posts) {
+      const row = document.createElement("div");
+      row.className = "board-post";
+      const chip = document.createElement("span");
+      chip.className = "author-chip";
+      if (post.author_id === "keeper") {
+        chip.textContent = t("board.author.keeper");
+      } else {
+        const face = document.createElement("span");
+        face.className = "tab-icon";
+        chip.append(face, document.createTextNode(post.author_id));
+      }
+      const text = document.createElement("p");
+      text.textContent = post.body;
+      row.append(chip, text);
+      this.boardList.append(row);
+    }
+  }
+
+  async openPeerPopup(peerId) {
+    const response = await fetch(`/api/peer/${peerId}`);
+    if (!response.ok) {
+      return;
+    }
+    const data = await response.json();
+    for (const existing of document.querySelectorAll(".popup")) {
+      existing.remove();
+    }
+    const popup = document.createElement("div");
+    popup.className = "popup peer-popup";
+    const header = document.createElement("h3");
+    header.textContent = `${data.name} · ${t(`popup.kind.${data.kind}`)}`;
+    const mood = document.createElement("p");
+    mood.className = "empty-note";
+    mood.textContent = data.mood ?? "";
+    const tiesTitle = document.createElement("h4");
+    tiesTitle.textContent = t("popup.ties");
+    const arrows = { up: "\u2197", flat: "\u2192", down: "\u2198" };
+    const ties = document.createElement("ul");
+    for (const tie of data.ties) {
+      const item = document.createElement("li");
+      item.textContent = `${tie.peer} — ${tie.label} ${arrows[tie.trend] ?? ""}`;
+      ties.append(item);
+    }
+    const latelyTitle = document.createElement("h4");
+    latelyTitle.textContent = t("popup.lately");
+    const lately = document.createElement("ul");
+    for (const line of data.lately) {
+      const item = document.createElement("li");
+      item.textContent = line;
+      lately.append(item);
+    }
+    popup.append(header, mood, tiesTitle, ties, latelyTitle, lately);
+    popup.addEventListener("click", (event) => event.stopPropagation());
+    this.mapPane.append(popup);
+  }
+
   _renderHud() {
     this.hud = document.createElement("div");
     this.hud.className = "hud-chip";
@@ -193,9 +300,20 @@ export class Bridge {
   }
 
   _bindWorldEvents() {
-    window.addEventListener("peerport:open-signal-tower", () =>
-      this.switchTab("signal_tower"),
+    window.addEventListener("peerport:open-signal-tower", () => {
+      this.switchTab("signal_tower");
+      this.refreshBoard();
+    });
+    window.addEventListener("peerport:peer-selected", (event) =>
+      this.openPeerPopup(event.detail.peerId),
     );
+    document.addEventListener("click", (event) => {
+      if (!event.target.closest(".peer-popup")) {
+        for (const popup of document.querySelectorAll(".peer-popup")) {
+          popup.remove();
+        }
+      }
+    });
   }
 
   switchTab(tabId) {

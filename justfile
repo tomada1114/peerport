@@ -48,3 +48,7 @@ clean:
     rm -rf dist/ build/ .mypy_cache/ .ruff_cache/ .pytest_cache/ htmlcov/ .coverage site/
     find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
     find . -type d -name "*.egg-info" -exec rm -rf {} + 2>/dev/null || true
+
+# Clear Ruff's cache (a stale cache can mask lint errors locally vs CI)
+ruff-clean:
+    rm -rf .ruff_cache

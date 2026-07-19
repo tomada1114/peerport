@@ -99,12 +99,22 @@ def create_app(
                 resolved_config.world.tick_ms,
             )
         tick_task = asyncio.create_task(tick_coro)
+        engine = getattr(app.state, "decision_engine", None)
+        scheduler_tasks = (
+            [
+                asyncio.create_task(engine.run_peer(peer_id))
+                for peer_id in engine.sim.peers
+            ]
+            if engine is not None
+            else []
+        )
         try:
             yield
         finally:
-            tick_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await tick_task
+            for task in (*scheduler_tasks, tick_task):
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
 
     app = FastAPI(title="PeerPort", lifespan=lifespan)
     app.include_router(ws_router)
