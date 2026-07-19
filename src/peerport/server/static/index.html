@@ -34,6 +34,12 @@
               world.showSpeech(frame.peer_id, frame.text);
             } else if (frame.t === "spend") {
               bridge.applySpendFrame(frame);
+            } else if (frame.t === "chat_delta") {
+              bridge.applyChatDelta(frame);
+            } else if (frame.t === "chat_done") {
+              bridge.applyChatDone(frame);
+            } else if (frame.t === "presence") {
+              bridge.applyPresence(frame);
             }
           },
           onDisconnect: () => bridge.setReconnecting(true),

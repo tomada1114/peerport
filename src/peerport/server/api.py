@@ -35,9 +35,17 @@ def _stub(**extra: object) -> JSONResponse:
 
 
 @router.post("/chat")
-async def post_chat() -> JSONResponse:
-    """Keeper→Mate chat message; response deltas stream over `/ws`. See #18."""
-    return _stub()
+async def post_chat(request: Request) -> JSONResponse:
+    """Keeper→Mate chat message; response deltas stream over `/ws` (#18)."""
+    chat = getattr(request.app.state, "mate_chat", None)
+    if chat is None:
+        return _stub()
+    body = await request.json()
+    text = str(body.get("text", "")).strip()
+    if not text:
+        return JSONResponse(status_code=422, content={"detail": "empty message"})
+    await chat.handle(text)
+    return JSONResponse(content={"ok": True})
 
 
 @router.post("/board")

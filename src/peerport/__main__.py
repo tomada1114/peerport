@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import random
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -27,6 +28,11 @@ from peerport.db import (
     save_world_seconds,
 )
 from peerport.errors import ConfigError, MapDataError, PersonaValidationError
+from peerport.llm.budget import BudgetGuard
+from peerport.llm.client import LLMClient, OpenAIStreamingTransport
+from peerport.llm.prompts import build_fixed_prefix
+from peerport.mate.chat import MateChat
+from peerport.memory.stream import MemoryStream, OpenAIEmbedder
 from peerport.peers.personas import load_personas
 from peerport.server.app import create_app
 from peerport.world.clock import WorldClock
@@ -36,6 +42,10 @@ from peerport.world.worldmap import WorldMap
 if TYPE_CHECKING:
     import sqlite3
     from collections.abc import Sequence
+
+    from fastapi import FastAPI
+
+    from peerport.peers.personas import Persona
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +117,41 @@ def boot(
     return config, conn
 
 
+def _wire_mate_chat(
+    app: FastAPI,
+    config: Config,
+    conn: sqlite3.Connection,
+    personas: dict[str, Persona],
+    simulation: Simulation,
+) -> None:
+    """Attach the Mate chat pipeline when an API key is available.
+
+    Without OPENAI_API_KEY the world still runs LLM-less (boot §7);
+    /api/chat then answers 501 and the fog UI takes over (#27).
+    """
+    if not os.environ.get("OPENAI_API_KEY"):
+        logger.info("OPENAI_API_KEY not set; Mate chat disabled (LLM-less world)")
+        return
+    mate = next((p for p in personas.values() if p.kind == "mate"), None)
+    if mate is None:
+        return
+    budget = BudgetGuard(conn, config.budget.soft_cap_usd, config.budget.hard_cap_usd)
+    llm = LLMClient(
+        config=config,
+        conn=conn,
+        budget=budget,
+        transport=OpenAIStreamingTransport(),
+    )
+    app.state.mate_chat = MateChat(
+        llm=llm,
+        memory=MemoryStream(conn, OpenAIEmbedder()),
+        broadcaster=app.state.broadcaster,
+        mate_id=mate.id,
+        fixed_prefix=build_fixed_prefix(mate.body, config.locale),
+        now_world=lambda: simulation.state.world_seconds,
+    )
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """CLI entry point (console script `peerport`).
 
@@ -150,6 +195,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
 
     app = create_app(config, simulation=simulation)
+    _wire_mate_chat(app, config, conn, personas, simulation)
     uvicorn.run(
         app,
         host="127.0.0.1",
