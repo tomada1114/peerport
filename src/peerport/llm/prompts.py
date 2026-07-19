@@ -97,3 +97,13 @@ class LogbookEvents(BaseModel):
     """The array wrapper for a logbook generation call."""
 
     events: list[LogbookEvent]
+
+
+class MailLetter(BaseModel):
+    """One generated friend letter plus their updated state (requirements §4.6)."""
+
+    subject: str
+    body: str
+    mood: str
+    recent_topics: list[str]
+    summary: str

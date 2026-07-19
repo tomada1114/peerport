@@ -6,7 +6,25 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from peerport.db import Database, backup_db, open_db, reset_fresh, rotate_backups
+from peerport.db import (
+    Database,
+    EventRecord,
+    NewMail,
+    backup_db,
+    get_mail,
+    get_world_state,
+    insert_event,
+    insert_mail,
+    list_events_by_type,
+    list_mails,
+    load_last_shutdown_ts_real,
+    mark_mail_read,
+    open_db,
+    reset_fresh,
+    rotate_backups,
+    save_last_shutdown_ts_real,
+    set_world_state,
+)
 from peerport.errors import DatabaseShutdownError
 
 if TYPE_CHECKING:
@@ -239,4 +257,153 @@ class TestDatabaseWriteFailureHandling:
         with pytest.raises(DatabaseShutdownError):
             db.execute_write("INSERT INTO nonexistent_table (x) VALUES (1)")
 
+        conn.close()
+
+
+class TestLastShutdown:
+    def test_absent_by_default(self, tmp_path: Path) -> None:
+        conn = open_db(tmp_path / "peerport.db")
+        assert load_last_shutdown_ts_real(conn) is None
+        conn.close()
+
+    def test_save_then_load_round_trips(self, tmp_path: Path) -> None:
+        conn = open_db(tmp_path / "peerport.db")
+        save_last_shutdown_ts_real(conn, 1_700_000_000)
+        assert load_last_shutdown_ts_real(conn) == 1_700_000_000
+        conn.close()
+
+
+class TestGenericWorldState:
+    def test_absent_key_returns_none(self, tmp_path: Path) -> None:
+        conn = open_db(tmp_path / "peerport.db")
+        assert get_world_state(conn, "friend_state:kai") is None
+        conn.close()
+
+    def test_set_then_get_round_trips(self, tmp_path: Path) -> None:
+        conn = open_db(tmp_path / "peerport.db")
+        set_world_state(conn, "friend_state:kai", '{"mood": "proud"}')
+        assert get_world_state(conn, "friend_state:kai") == '{"mood": "proud"}'
+        conn.close()
+
+
+class TestEventsByType:
+    def test_filters_by_type_ordered_oldest_first(self, tmp_path: Path) -> None:
+        conn = open_db(tmp_path / "peerport.db")
+        insert_event(
+            conn,
+            EventRecord(ts_world=10, kind="logbook", actors=["kai"], payload='{"a":1}'),
+        )
+        insert_event(
+            conn,
+            EventRecord(
+                ts_world=20, kind="conversation", actors=["a", "b"], payload="{}"
+            ),
+        )
+        insert_event(
+            conn,
+            EventRecord(ts_world=30, kind="logbook", actors=["tug"], payload='{"a":2}'),
+        )
+
+        events = list_events_by_type(conn, "logbook")
+
+        assert [e["ts_world"] for e in events] == [10, 30]
+        assert events[0]["actors"] == ["kai"]
+        conn.close()
+
+    def test_shared_ts_real_groups_a_batch(self, tmp_path: Path) -> None:
+        conn = open_db(tmp_path / "peerport.db")
+        insert_event(
+            conn,
+            EventRecord(
+                ts_world=10, kind="logbook", actors=["kai"], payload="{}", ts_real=500
+            ),
+        )
+        insert_event(
+            conn,
+            EventRecord(
+                ts_world=10, kind="logbook", actors=["tug"], payload="{}", ts_real=500
+            ),
+        )
+
+        events = list_events_by_type(conn, "logbook")
+
+        assert {e["ts_real"] for e in events} == {500}
+        conn.close()
+
+
+class TestMails:
+    def test_absent_mail_returns_none(self, tmp_path: Path) -> None:
+        conn = open_db(tmp_path / "peerport.db")
+        assert get_mail(conn, 999) is None
+        conn.close()
+
+    def test_insert_then_get_round_trips_unread(self, tmp_path: Path) -> None:
+        conn = open_db(tmp_path / "peerport.db")
+        mail_id = insert_mail(
+            conn,
+            NewMail(friend_id="kai", direction="in", subject="Hi", body="Hello there"),
+        )
+
+        mail = get_mail(conn, mail_id)
+
+        assert mail is not None
+        assert mail.friend_id == "kai"
+        assert mail.direction == "in"
+        assert mail.read is False
+        assert mail.parent_id is None
+        conn.close()
+
+    def test_list_mails_newest_first(self, tmp_path: Path) -> None:
+        conn = open_db(tmp_path / "peerport.db")
+        insert_mail(
+            conn,
+            NewMail(
+                friend_id="kai", direction="in", subject="First", body="1", ts_real=100
+            ),
+        )
+        insert_mail(
+            conn,
+            NewMail(
+                friend_id="mia", direction="in", subject="Second", body="2", ts_real=200
+            ),
+        )
+
+        mails = list_mails(conn)
+
+        assert [m.subject for m in mails] == ["Second", "First"]
+        conn.close()
+
+    def test_mark_mail_read_flips_flag(self, tmp_path: Path) -> None:
+        conn = open_db(tmp_path / "peerport.db")
+        mail_id = insert_mail(
+            conn, NewMail(friend_id="kai", direction="in", subject="Hi", body="body")
+        )
+
+        mark_mail_read(conn, mail_id)
+
+        mail = get_mail(conn, mail_id)
+        assert mail is not None
+        assert mail.read is True
+        conn.close()
+
+    def test_reply_stores_parent_id(self, tmp_path: Path) -> None:
+        conn = open_db(tmp_path / "peerport.db")
+        letter_id = insert_mail(
+            conn, NewMail(friend_id="kai", direction="in", subject="Hi", body="body")
+        )
+
+        reply_id = insert_mail(
+            conn,
+            NewMail(
+                friend_id="kai",
+                direction="out",
+                subject="Re: Hi",
+                body="reply",
+                parent_id=letter_id,
+            ),
+        )
+
+        reply = get_mail(conn, reply_id)
+        assert reply is not None
+        assert reply.parent_id == letter_id
         conn.close()

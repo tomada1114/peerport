@@ -16,7 +16,15 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from peerport.config import VALID_LOCALES
-from peerport.db import insert_board_post, list_board_posts, list_relationships
+from peerport.db import (
+    Mail,
+    insert_board_post,
+    list_board_posts,
+    list_mails,
+    list_relationships,
+    mark_mail_read,
+)
+from peerport.world.clock import WorldClock
 
 router = APIRouter(prefix="/api")
 
@@ -80,10 +88,59 @@ async def get_board(request: Request) -> JSONResponse:
     return JSONResponse(content={"posts": list_board_posts(conn)})
 
 
+def _mail_to_dict(mail: Mail, clock: WorldClock) -> dict[str, object]:
+    return {
+        "id": mail.id,
+        "friend_id": mail.friend_id,
+        "direction": mail.direction,
+        "subject": mail.subject,
+        "body": mail.body,
+        "ts_real": mail.ts_real,
+        "world_day": clock.day(mail.ts_world) if mail.ts_world is not None else None,
+        "read": mail.read,
+        "parent_id": mail.parent_id,
+    }
+
+
+@router.get("/mail")
+async def get_mail_list(request: Request) -> JSONResponse:
+    """List all mail, newest first (#23)."""
+    conn = getattr(request.app.state, "db_conn", None)
+    if conn is None:
+        return _stub()
+    simulation = getattr(request.app.state, "simulation", None)
+    clock = simulation.clock if simulation is not None else WorldClock()
+    return JSONResponse(
+        content={"mails": [_mail_to_dict(m, clock) for m in list_mails(conn)]}
+    )
+
+
+@router.post("/mail/{mail_id}/read")
+async def post_mail_read(mail_id: str, request: Request) -> JSONResponse:
+    """Mark one letter as read, clearing its unread dot (#23)."""
+    conn = getattr(request.app.state, "db_conn", None)
+    if conn is None:
+        return _stub(mail_id=mail_id)
+    if not mail_id.isdigit():
+        return JSONResponse(status_code=422, content={"detail": "invalid mail id"})
+    mark_mail_read(conn, int(mail_id))
+    return JSONResponse(content={"ok": True})
+
+
 @router.post("/mail/{mail_id}/reply")
-async def post_mail_reply(mail_id: str) -> JSONResponse:
-    """Reply to a friend's mail. See #23."""
-    return _stub(mail_id=mail_id)
+async def post_mail_reply(mail_id: str, request: Request) -> JSONResponse:
+    """Reply to a friend's mail (#23)."""
+    service = getattr(request.app.state, "mail_service", None)
+    if service is None:
+        return _stub(mail_id=mail_id)
+    body = await request.json()
+    text = str(body.get("text", "")).strip()
+    if not text:
+        return JSONResponse(status_code=422, content={"detail": "empty reply"})
+    if not mail_id.isdigit():
+        return JSONResponse(status_code=422, content={"detail": "invalid mail id"})
+    await service.reply(int(mail_id), text)
+    return JSONResponse(content={"ok": True})
 
 
 @router.post("/world")
@@ -135,9 +192,12 @@ async def post_notes() -> JSONResponse:
 
 
 @router.get("/logbook")
-async def get_logbook() -> JSONResponse:
-    """Fetch the absence/weekly chronicle log. See #22."""
-    return _stub()
+async def get_logbook(request: Request) -> JSONResponse:
+    """Fetch the absence/weekly chronicle log (#22)."""
+    service = getattr(request.app.state, "logbook_service", None)
+    if service is None:
+        return _stub()
+    return JSONResponse(content=service.read_logbook())
 
 
 @router.get("/usage")

@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 from pydantic import BaseModel
 
 from peerport.db import (
+    EventRecord,
     Relationship,
     get_relationship,
     insert_event,
@@ -28,7 +29,7 @@ from peerport.llm.client import PromptParts
 from peerport.llm.prompts import ConversationTurn, build_fixed_prefix
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Awaitable, Callable, Mapping
     from sqlite3 import Connection
 
     from peerport.llm.client import LLMClient
@@ -61,6 +62,7 @@ class ConversationEngine:
     broadcaster: object
     conn: Connection
     personas: Mapping[str, Persona]
+    on_peer_event: Callable[[str], Awaitable[None]] | None = None
     busy: set[str] = field(default_factory=set)
 
     def eligible(self, a: str, b: str) -> bool:
@@ -136,10 +138,12 @@ class ConversationEngine:
         now_world = self.sim.state.world_seconds
         insert_event(
             self.conn,
-            ts_world=now_world,
-            kind="conversation",
-            actors=[a, b],
-            payload=json.dumps(turns),
+            EventRecord(
+                ts_world=now_world,
+                kind="conversation",
+                actors=[a, b],
+                payload=json.dumps(turns),
+            ),
         )
         transcript = "\n".join(f"{s}: {t}" for s, t in turns)
         result = await self.llm.call(
@@ -173,3 +177,6 @@ class ConversationEngine:
                 last_delta=outcome.delta,
             ),
         )
+        if self.on_peer_event is not None:
+            for peer_id in (a, b):
+                await self.on_peer_event(peer_id)

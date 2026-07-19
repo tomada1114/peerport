@@ -55,6 +55,23 @@ class ServerConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class LogbookConfig:
+    """Logbook generation toggles (#22)."""
+
+    weekly_summary: bool = True
+
+
+DEFAULT_MAIL_CADENCE_DAYS = 3
+
+
+@dataclass(frozen=True, slots=True)
+class MailConfig:
+    """Friend mail generation toggles (#23)."""
+
+    cadence_days: int = DEFAULT_MAIL_CADENCE_DAYS
+
+
+@dataclass(frozen=True, slots=True)
 class Config:
     """Fully resolved application configuration."""
 
@@ -63,6 +80,8 @@ class Config:
     budget: BudgetConfig = field(default_factory=BudgetConfig)
     world: WorldConfig = field(default_factory=WorldConfig)
     server: ServerConfig = field(default_factory=ServerConfig)
+    logbook: LogbookConfig = field(default_factory=LogbookConfig)
+    mail: MailConfig = field(default_factory=MailConfig)
 
 
 def _section(data: dict[str, Any], key: str) -> dict[str, Any]:
@@ -170,6 +189,26 @@ def load_config(path: Path) -> Config:
         ),
     )
 
+    logbook_data = _section(data, "logbook")
+    logbook = LogbookConfig(
+        weekly_summary=bool(logbook_data.get("weekly_summary", True)),
+    )
+
+    mail_data = _section(data, "mail")
+    mail = MailConfig(
+        cadence_days=_require_int(
+            "mail",
+            "cadence_days",
+            mail_data.get("cadence_days", DEFAULT_MAIL_CADENCE_DAYS),
+        ),
+    )
+
     return Config(
-        locale=locale, models=models, budget=budget, world=world, server=server
+        locale=locale,
+        models=models,
+        budget=budget,
+        world=world,
+        server=server,
+        logbook=logbook,
+        mail=mail,
     )

@@ -89,6 +89,11 @@ class TestI18nDiscipline:
         for key in ("tab.mate", "hud.day", "hud.spend_today", "state.reconnecting"):
             assert key in source, f"bridge.js never references catalog key {key}"
 
+    def test_bridge_js_resolves_logbook_strings_via_catalog(self) -> None:
+        source = (STATIC / "js" / "bridge.js").read_text()
+        for key in ("logbook.empty", "logbook.while_away", "logbook.chronicle"):
+            assert key in source, f"bridge.js never references catalog key {key}"
+
     def test_locale_catalogs_have_identical_key_sets(self) -> None:
         en = json.loads((REPO_ROOT / "locales" / "en.json").read_text())
         ja = json.loads((REPO_ROOT / "locales" / "ja.json").read_text())
@@ -133,3 +138,41 @@ class TestClientApis:
         response = client.get("/api/config")
         assert response.status_code == 200
         assert response.json()["locale"] == "en"
+
+
+class TestLogbookFrontendContract:
+    def test_index_dispatches_digest_and_logbook_updated_frames(self) -> None:
+        html = (STATIC / "index.html").read_text()
+        assert "applyDigest" in html
+        assert "logbook_updated" in html
+        assert "peerport:logbook-updated" in html
+
+    def test_bridge_js_refreshes_logbook_via_api(self) -> None:
+        source = (STATIC / "js" / "bridge.js").read_text()
+        assert "/api/logbook" in source
+        assert "peerport:logbook-updated" in source
+        assert "applyDigest" in source
+
+
+class TestMailFrontendContract:
+    def test_index_dispatches_mail_updated_frame(self) -> None:
+        html = (STATIC / "index.html").read_text()
+        assert "mail_received" in html
+        assert "peerport:mail-updated" in html
+
+    def test_bridge_js_resolves_mail_strings_via_catalog(self) -> None:
+        source = (STATIC / "js" / "bridge.js").read_text()
+        for key in ("mail.empty", "mail.reply.placeholder", "mail.send"):
+            assert key in source, f"bridge.js never references catalog key {key}"
+
+    def test_bridge_js_lists_and_replies_via_api(self) -> None:
+        source = (STATIC / "js" / "bridge.js").read_text()
+        assert "/api/mail" in source
+        assert "/reply" in source
+        assert "/read" in source
+        assert "peerport:mail-updated" in source
+
+    def test_mail_css_has_distinct_sender_edge_colors(self) -> None:
+        css = (STATIC / "css" / "bridge.css").read_text()
+        assert ".sender-kai" in css
+        assert ".sender-mia" in css
