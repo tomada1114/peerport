@@ -6,6 +6,9 @@ import datetime as dt
 from typing import TYPE_CHECKING
 
 import pytest
+
+from peerport.db import UsageRecord, insert_usage, open_db
+from peerport.errors import BudgetExceededError
 from peerport.llm.budget import (
     BASE_ACTIVITY_BOUNDS,
     BASE_TURN_LIMIT,
@@ -13,9 +16,6 @@ from peerport.llm.budget import (
     LOW_POWER_TURN_LIMIT,
     BudgetGuard,
 )
-
-from peerport.db import UsageRecord, insert_usage, open_db
-from peerport.errors import BudgetExceededError
 
 if TYPE_CHECKING:
     import sqlite3
