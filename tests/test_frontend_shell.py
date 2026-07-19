@@ -89,6 +89,11 @@ class TestI18nDiscipline:
         for key in ("tab.mate", "hud.day", "hud.spend_today", "state.reconnecting"):
             assert key in source, f"bridge.js never references catalog key {key}"
 
+    def test_bridge_js_resolves_logbook_strings_via_catalog(self) -> None:
+        source = (STATIC / "js" / "bridge.js").read_text()
+        for key in ("logbook.empty", "logbook.while_away", "logbook.chronicle"):
+            assert key in source, f"bridge.js never references catalog key {key}"
+
     def test_locale_catalogs_have_identical_key_sets(self) -> None:
         en = json.loads((REPO_ROOT / "locales" / "en.json").read_text())
         ja = json.loads((REPO_ROOT / "locales" / "ja.json").read_text())
@@ -133,3 +138,17 @@ class TestClientApis:
         response = client.get("/api/config")
         assert response.status_code == 200
         assert response.json()["locale"] == "en"
+
+
+class TestLogbookFrontendContract:
+    def test_index_dispatches_digest_and_logbook_updated_frames(self) -> None:
+        html = (STATIC / "index.html").read_text()
+        assert "applyDigest" in html
+        assert "logbook_updated" in html
+        assert "peerport:logbook-updated" in html
+
+    def test_bridge_js_refreshes_logbook_via_api(self) -> None:
+        source = (STATIC / "js" / "bridge.js").read_text()
+        assert "/api/logbook" in source
+        assert "peerport:logbook-updated" in source
+        assert "applyDigest" in source

@@ -38,10 +38,14 @@
               bridge.applyChatDelta(frame);
             } else if (frame.t === "chat_done") {
               bridge.applyChatDone(frame);
+            } else if (frame.t === "digest") {
+              bridge.applyDigest(frame);
             } else if (frame.t === "presence") {
               bridge.applyPresence(frame);
             } else if (frame.t === "event" && frame.kind === "board_post") {
               window.dispatchEvent(new CustomEvent("peerport:board-updated"));
+            } else if (frame.t === "event" && frame.kind === "logbook_updated") {
+              window.dispatchEvent(new CustomEvent("peerport:logbook-updated"));
             }
           },
           onDisconnect: () => bridge.setReconnecting(true),

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import pytest
 
@@ -147,7 +147,9 @@ class TestAbsenceReportTrigger:
     ) -> None:
         now = 1_700_010_000
         save_last_shutdown_ts_real(conn, now - 30 * 86400)  # 30 days away
-        raw_events = [{"peer_ids": ["tug"], "text": f"event {i}"} for i in range(15)]
+        raw_events: list[dict[str, object]] = [
+            {"peer_ids": ["tug"], "text": f"event {i}"} for i in range(15)
+        ]
         transport = FakeTransport([events_reply(raw_events)])
         service = make_service(conn, transport, now_real=now)
 
@@ -327,9 +329,10 @@ class TestReadLogbook:
         await service2.maybe_generate_absence_report()
 
         data = service2.read_logbook()
+        while_away = cast("list[dict[str, object]]", data["while_away"])
 
-        assert len(data["while_away"]) == 1
-        assert data["while_away"][0]["text"] == "Second absence event."
+        assert len(while_away) == 1
+        assert while_away[0]["text"] == "Second absence event."
 
     @pytest.mark.anyio
     async def test_chronicle_groups_by_world_day(

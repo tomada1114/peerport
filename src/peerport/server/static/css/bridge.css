@@ -312,3 +312,27 @@ body {
   margin: 0;
   padding-left: 16px;
 }
+
+/* --- Logbook (#22) -------------------------------------------------- */
+
+.logbook-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.logbook-entry {
+  border: 1px solid var(--tide-line);
+  border-radius: 4px;
+  padding: 8px;
+  margin: 0;
+  font-size: 13px;
+}
+
+.logbook-day h5 {
+  font-family: var(--font-display);
+  color: var(--beacon-amber);
+  font-size: 11px;
+  margin: 0 0 4px;
+}
