@@ -9,6 +9,7 @@ from .core import add
 from .db import Database, backup_db, open_db, reset_fresh, rotate_backups
 from .peers.personas import Persona, load_personas
 from .server.app import create_app
+from .world.worldmap import WorldMap
 
 try:
     __version__ = version("peerport")
@@ -19,6 +20,7 @@ __all__ = [
     "Config",
     "Database",
     "Persona",
+    "WorldMap",
     "__version__",
     "add",
     "backup_db",
