@@ -154,6 +154,21 @@ class TestMain:
         assert exit_code == 0
         assert (tmp_path / "data" / "peerport.db").exists()
 
+    @pytest.mark.usefixtures("world_files")
+    def test_notes_store_wired_without_api_key(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        uvicorn_run_calls: list[dict[str, object]],
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        main([])
+
+        app = uvicorn_run_calls[0]["app"]
+        assert app.state.notes_store is not None
+
     def test_returns_nonzero_on_invalid_config(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

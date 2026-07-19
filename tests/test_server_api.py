@@ -8,6 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from peerport.db import NewMail, insert_mail, open_db
+from peerport.mate.notes import NotesStore
 from peerport.server.app import create_app
 
 if TYPE_CHECKING:
@@ -21,7 +22,8 @@ ROUTES: list[tuple[str, str]] = [
     ("GET", "/api/mail"),
     ("POST", "/api/world"),
     ("GET", "/api/notes"),
-    ("POST", "/api/notes"),
+    ("GET", "/api/notes/note-1"),
+    ("DELETE", "/api/notes/note-1"),
     ("GET", "/api/logbook"),
     ("GET", "/api/usage"),
     ("POST", "/api/settings"),
@@ -153,3 +155,49 @@ class TestPostMailReply:
 
         assert response.status_code == 422
         assert service.replies == []
+
+
+class TestNotesRoutes:
+    def test_get_notes_lists_from_store(self, tmp_path: Path) -> None:
+        store = NotesStore(tmp_path / "notes")
+        store.create("Tide Patterns", "body")
+        app = create_app()
+        with TestClient(app) as client:
+            app.state.notes_store = store
+            response = client.get("/api/notes")
+
+        assert response.status_code == 200
+        notes = response.json()["notes"]
+        assert len(notes) == 1
+        assert notes[0]["title"] == "Tide Patterns"
+
+    def test_get_note_detail_returns_content(self, tmp_path: Path) -> None:
+        store = NotesStore(tmp_path / "notes")
+        note_id = store.create("Tide Patterns", "The tides run high.")
+        app = create_app()
+        with TestClient(app) as client:
+            app.state.notes_store = store
+            response = client.get(f"/api/notes/{note_id}")
+
+        assert response.status_code == 200
+        assert "The tides run high." in response.json()["content_markdown"]
+
+    def test_get_note_detail_unknown_id_404(self, tmp_path: Path) -> None:
+        store = NotesStore(tmp_path / "notes")
+        app = create_app()
+        with TestClient(app) as client:
+            app.state.notes_store = store
+            response = client.get("/api/notes/does-not-exist")
+
+        assert response.status_code == 404
+
+    def test_delete_note_removes_it(self, tmp_path: Path) -> None:
+        store = NotesStore(tmp_path / "notes")
+        note_id = store.create("Tide Patterns", "body")
+        app = create_app()
+        with TestClient(app) as client:
+            app.state.notes_store = store
+            response = client.delete(f"/api/notes/{note_id}")
+
+        assert response.status_code == 200
+        assert store.list_notes() == []

@@ -36,6 +36,7 @@ from peerport.llm.client import LLMClient, OpenAIStreamingTransport, OpenAITrans
 from peerport.llm.prompts import build_fixed_prefix
 from peerport.logbook import LogbookService
 from peerport.mate.chat import MateChat
+from peerport.mate.notes import NotesStore
 from peerport.memory.stream import MemoryStream, OpenAIEmbedder
 from peerport.peers.converse import ConversationEngine
 from peerport.peers.decide import DecisionEngine, make_board_hooks
@@ -135,6 +136,8 @@ def _wire_mate_chat(
     Without OPENAI_API_KEY the world still runs LLM-less (boot §7);
     /api/chat then answers 501 and the fog UI takes over (#27).
     """
+    notes_store = NotesStore(Path("data") / "notes")
+    app.state.notes_store = notes_store
     if not os.environ.get("OPENAI_API_KEY"):
         logger.info("OPENAI_API_KEY not set; Mate chat disabled (LLM-less world)")
         return
@@ -152,6 +155,7 @@ def _wire_mate_chat(
         llm=llm,
         memory=MemoryStream(conn, OpenAIEmbedder()),
         broadcaster=app.state.broadcaster,
+        notes=notes_store,
         mate_id=mate.id,
         fixed_prefix=build_fixed_prefix(mate.body, config.locale),
         now_world=lambda: simulation.state.world_seconds,
