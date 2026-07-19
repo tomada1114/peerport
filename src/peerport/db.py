@@ -124,6 +124,7 @@ _SCHEMA_UPGRADES = (
     ("usage_log", "status", "TEXT"),
     ("relationships", "last_delta", "INTEGER"),
     ("board_posts", "created_at", "INTEGER"),
+    ("mails", "parent_id", "INTEGER"),
 )
 
 
@@ -277,6 +278,41 @@ def save_world_seconds(conn: sqlite3.Connection, world_seconds: int) -> None:
         )
 
 
+LAST_SHUTDOWN_KEY = "last_shutdown_ts_real"
+
+
+def load_last_shutdown_ts_real(conn: sqlite3.Connection) -> int | None:
+    """Read the wall-clock shutdown time, or `None` on a brand-new world."""
+    row = conn.execute(
+        "SELECT value FROM world_state WHERE key = ?", (LAST_SHUTDOWN_KEY,)
+    ).fetchone()
+    return int(row[0]) if row is not None else None
+
+
+def save_last_shutdown_ts_real(conn: sqlite3.Connection, ts_real: int) -> None:
+    """Persist the wall-clock shutdown time for the next boot's absence check."""
+    with conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO world_state (key, value) VALUES (?, ?)",
+            (LAST_SHUTDOWN_KEY, str(ts_real)),
+        )
+
+
+def get_world_state(conn: sqlite3.Connection, key: str) -> str | None:
+    """Read a raw `world_state` value by key, or `None` if absent."""
+    row = conn.execute("SELECT value FROM world_state WHERE key = ?", (key,)).fetchone()
+    return row[0] if row is not None else None
+
+
+def set_world_state(conn: sqlite3.Connection, key: str, value: str) -> None:
+    """Upsert a raw `world_state` value by key."""
+    with conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO world_state (key, value) VALUES (?, ?)",
+            (key, value),
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class UsageRecord:
     """One LLM/embedding call's usage row (success or failure)."""
@@ -383,27 +419,64 @@ def list_relationships(
     ]
 
 
-def insert_event(
-    conn: sqlite3.Connection,
-    *,
-    ts_world: int,
-    kind: str,
-    actors: list[str],
-    payload: str,
-) -> None:
-    """Append one row to the full-history `events` table."""
+@dataclass(frozen=True, slots=True)
+class EventRecord:
+    """One `events` table row (full-history log)."""
+
+    ts_world: int
+    kind: str
+    actors: list[str]
+    payload: str
+    ts_real: int | None = None
+
+
+def insert_event(conn: sqlite3.Connection, record: EventRecord) -> None:
+    """Append one row to the full-history `events` table.
+
+    Args:
+        conn: Open database connection.
+        record: The event to append. A `None` `ts_real` defaults to now;
+            callers writing several rows for one logical batch (e.g. one
+            logbook generation) may pass the same `ts_real` to group them.
+    """
+    timestamp = (
+        record.ts_real
+        if record.ts_real is not None
+        else int(datetime.now(UTC).timestamp())
+    )
     with conn:
         conn.execute(
             "INSERT INTO events (ts_world, ts_real, type, actors, payload)"
             " VALUES (?, ?, ?, ?, ?)",
             (
-                ts_world,
-                int(datetime.now(UTC).timestamp()),
-                kind,
-                json.dumps(actors),
-                payload,
+                record.ts_world,
+                timestamp,
+                record.kind,
+                json.dumps(record.actors),
+                record.payload,
             ),
         )
+
+
+def list_events_by_type(
+    conn: sqlite3.Connection, event_type: str
+) -> list[dict[str, object]]:
+    """All `events` rows of *event_type*, oldest first."""
+    rows = conn.execute(
+        "SELECT id, ts_world, ts_real, actors, payload FROM events"
+        " WHERE type = ? ORDER BY id",
+        (event_type,),
+    ).fetchall()
+    return [
+        {
+            "id": row[0],
+            "ts_world": row[1],
+            "ts_real": row[2],
+            "actors": json.loads(row[3] or "[]"),
+            "payload": json.loads(row[4]),
+        }
+        for row in rows
+    ]
 
 
 def insert_board_post(
@@ -447,3 +520,92 @@ def list_board_posts(
         }
         for row in conn.execute(sql).fetchall()
     ]
+
+
+@dataclass(frozen=True, slots=True)
+class Mail:
+    """One stored mail row: a friend's letter or a Keeper reply."""
+
+    id: int
+    friend_id: str
+    direction: str
+    subject: str
+    body: str
+    ts_real: int
+    read: bool
+    parent_id: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class NewMail:
+    """Fields for inserting one new `mails` row."""
+
+    friend_id: str
+    direction: str
+    subject: str
+    body: str
+    parent_id: int | None = None
+    ts_real: int | None = None
+
+
+def _row_to_mail(row: tuple[object, ...]) -> Mail:
+    return Mail(
+        id=row[0],  # type: ignore[arg-type]
+        friend_id=row[1],  # type: ignore[arg-type]
+        direction=row[2],  # type: ignore[arg-type]
+        subject=row[3],  # type: ignore[arg-type]
+        body=row[4],  # type: ignore[arg-type]
+        ts_real=row[5],  # type: ignore[arg-type]
+        read=bool(row[6]),
+        parent_id=row[7],  # type: ignore[arg-type]
+    )
+
+
+def insert_mail(conn: sqlite3.Connection, mail: NewMail) -> int:
+    """Insert one mail row (a friend's letter or a Keeper reply).
+
+    Returns:
+        The new row id.
+    """
+    timestamp = (
+        mail.ts_real if mail.ts_real is not None else int(datetime.now(UTC).timestamp())
+    )
+    with conn:
+        cursor = conn.execute(
+            "INSERT INTO mails (friend_id, direction, subject, body, ts_real,"
+            " read, parent_id) VALUES (?, ?, ?, ?, ?, 0, ?)",
+            (
+                mail.friend_id,
+                mail.direction,
+                mail.subject,
+                mail.body,
+                timestamp,
+                mail.parent_id,
+            ),
+        )
+    return int(cursor.lastrowid or 0)
+
+
+def list_mails(conn: sqlite3.Connection) -> list[Mail]:
+    """All mails, newest first."""
+    rows = conn.execute(
+        "SELECT id, friend_id, direction, subject, body, ts_real, read, parent_id"
+        " FROM mails ORDER BY ts_real DESC, id DESC"
+    ).fetchall()
+    return [_row_to_mail(row) for row in rows]
+
+
+def get_mail(conn: sqlite3.Connection, mail_id: int) -> Mail | None:
+    """One mail row by id, or `None` if it does not exist."""
+    row = conn.execute(
+        "SELECT id, friend_id, direction, subject, body, ts_real, read, parent_id"
+        " FROM mails WHERE id = ?",
+        (mail_id,),
+    ).fetchone()
+    return _row_to_mail(row) if row is not None else None
+
+
+def mark_mail_read(conn: sqlite3.Connection, mail_id: int) -> None:
+    """Mark one mail as read (clears its unread dot)."""
+    with conn:
+        conn.execute("UPDATE mails SET read = 1 WHERE id = ?", (mail_id,))

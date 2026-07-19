@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 from pydantic import BaseModel
 
 from peerport.db import (
+    EventRecord,
     Relationship,
     get_relationship,
     insert_event,
@@ -136,10 +137,12 @@ class ConversationEngine:
         now_world = self.sim.state.world_seconds
         insert_event(
             self.conn,
-            ts_world=now_world,
-            kind="conversation",
-            actors=[a, b],
-            payload=json.dumps(turns),
+            EventRecord(
+                ts_world=now_world,
+                kind="conversation",
+                actors=[a, b],
+                payload=json.dumps(turns),
+            ),
         )
         transcript = "\n".join(f"{s}: {t}" for s, t in turns)
         result = await self.llm.call(

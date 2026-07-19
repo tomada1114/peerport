@@ -55,6 +55,13 @@ class ServerConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class LogbookConfig:
+    """Logbook generation toggles (#22)."""
+
+    weekly_summary: bool = True
+
+
+@dataclass(frozen=True, slots=True)
 class Config:
     """Fully resolved application configuration."""
 
@@ -63,6 +70,7 @@ class Config:
     budget: BudgetConfig = field(default_factory=BudgetConfig)
     world: WorldConfig = field(default_factory=WorldConfig)
     server: ServerConfig = field(default_factory=ServerConfig)
+    logbook: LogbookConfig = field(default_factory=LogbookConfig)
 
 
 def _section(data: dict[str, Any], key: str) -> dict[str, Any]:
@@ -170,6 +178,16 @@ def load_config(path: Path) -> Config:
         ),
     )
 
+    logbook_data = _section(data, "logbook")
+    logbook = LogbookConfig(
+        weekly_summary=bool(logbook_data.get("weekly_summary", True)),
+    )
+
     return Config(
-        locale=locale, models=models, budget=budget, world=world, server=server
+        locale=locale,
+        models=models,
+        budget=budget,
+        world=world,
+        server=server,
+        logbook=logbook,
     )
