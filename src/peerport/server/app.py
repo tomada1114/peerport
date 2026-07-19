@@ -20,6 +20,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from peerport.config import Config
+from peerport.friends.mail import run_cadence_loop
 from peerport.logbook import run_boot_generation
 from peerport.server.api import router as api_router
 from peerport.server.state import Broadcaster, WorldState, tick_state
@@ -123,10 +124,16 @@ def create_app(
             if logbook_service is not None
             else []
         )
+        mail_service = getattr(app.state, "mail_service", None)
+        mail_tasks = (
+            [asyncio.create_task(run_cadence_loop(mail_service))]
+            if mail_service is not None
+            else []
+        )
         try:
             yield
         finally:
-            for task in (*scheduler_tasks, *logbook_tasks, tick_task):
+            for task in (*scheduler_tasks, *logbook_tasks, *mail_tasks, tick_task):
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await task

@@ -30,6 +30,7 @@ from peerport.db import (
     save_world_seconds,
 )
 from peerport.errors import ConfigError, MapDataError, PersonaValidationError
+from peerport.friends.mail import MailService
 from peerport.llm.budget import BudgetGuard
 from peerport.llm.client import LLMClient, OpenAIStreamingTransport, OpenAITransport
 from peerport.llm.prompts import build_fixed_prefix
@@ -157,6 +158,33 @@ def _wire_mate_chat(
     )
 
 
+def _wire_friends(
+    app: FastAPI,
+    config: Config,
+    conn: sqlite3.Connection,
+    personas: dict[str, Persona],
+    simulation: Simulation,
+) -> MailService | None:
+    """Attach the friend mail service when an API key is available."""
+    if not os.environ.get("OPENAI_API_KEY"):
+        return None
+    budget = BudgetGuard(conn, config.budget.soft_cap_usd, config.budget.hard_cap_usd)
+    llm = LLMClient(
+        config=config, conn=conn, budget=budget, transport=OpenAITransport()
+    )
+    service = MailService(
+        llm=llm,
+        conn=conn,
+        memory=MemoryStream(conn, OpenAIEmbedder()),
+        personas=personas,
+        clock=simulation.clock,
+        now_world=lambda: simulation.state.world_seconds,
+        cadence_days=config.mail.cadence_days,
+    )
+    app.state.mail_service = service
+    return service
+
+
 def _wire_peer_society(
     app: FastAPI,
     config: Config,
@@ -164,9 +192,15 @@ def _wire_peer_society(
     personas: dict[str, Persona],
     simulation: Simulation,
 ) -> None:
-    """Attach the decision and conversation engines when a key exists."""
+    """Attach the decision and conversation engines when a key exists.
+
+    Reads `app.state.mail_service` (set by `_wire_friends`, called first)
+    to wire hearsay into decisions and peer-event notifications into
+    conversations, when a mail service was actually wired.
+    """
     if not os.environ.get("OPENAI_API_KEY"):
         return
+    mail_service: MailService | None = getattr(app.state, "mail_service", None)
     budget = BudgetGuard(conn, config.budget.soft_cap_usd, config.budget.hard_cap_usd)
     llm = LLMClient(
         config=config, conn=conn, budget=budget, transport=OpenAITransport()
@@ -177,6 +211,7 @@ def _wire_peer_society(
         sim=simulation,
         personas=personas,
         rng=simulation.rng,
+        hearsay_provider=mail_service.hearsay_text if mail_service else None,
     )
     conversations = ConversationEngine(
         llm=llm,
@@ -191,6 +226,13 @@ def _wire_peer_society(
         started = await conversations.start(speaker, target)
         if started:
             await engine.trigger_redecision([target])
+
+    if mail_service is not None:
+
+        async def on_peer_event(peer_id: str) -> None:
+            await mail_service.notify_event(peer_id, f"An event involving {peer_id}.")
+
+        conversations.on_peer_event = on_peer_event
 
     post_hook, read_hook = make_board_hooks(
         conn,
@@ -281,6 +323,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     app.state.db_conn = conn
     app.state.personas = personas
     _wire_mate_chat(app, config, conn, personas, simulation)
+    _wire_friends(app, config, conn, personas, simulation)
     _wire_peer_society(app, config, conn, personas, simulation)
     _wire_logbook(app, config, conn, personas, simulation)
     uvicorn.run(

@@ -29,7 +29,7 @@ from peerport.llm.client import PromptParts
 from peerport.llm.prompts import ConversationTurn, build_fixed_prefix
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Awaitable, Callable, Mapping
     from sqlite3 import Connection
 
     from peerport.llm.client import LLMClient
@@ -62,6 +62,7 @@ class ConversationEngine:
     broadcaster: object
     conn: Connection
     personas: Mapping[str, Persona]
+    on_peer_event: Callable[[str], Awaitable[None]] | None = None
     busy: set[str] = field(default_factory=set)
 
     def eligible(self, a: str, b: str) -> bool:
@@ -176,3 +177,6 @@ class ConversationEngine:
                 last_delta=outcome.delta,
             ),
         )
+        if self.on_peer_event is not None:
+            for peer_id in (a, b):
+                await self.on_peer_event(peer_id)

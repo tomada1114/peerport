@@ -214,6 +214,24 @@ class TestConversationFlow:
         assert rel.last_delta == 3
 
     @pytest.mark.anyio
+    async def test_on_peer_event_called_for_both_participants(
+        self, conn: sqlite3.Connection, make_rng: Callable[[int], random.Random]
+    ) -> None:
+        transport = FakeTransport([turn("a", True), turn("b", True), OUTCOME])
+        engine, _ = make_engine(conn, make_rng(6), transport)
+        engine.sim.peers["tug"].tile = (10, 12)
+        engine.sim.peers["bell"].tile = (11, 12)
+        notified: list[str] = []
+
+        async def on_peer_event(peer_id: str) -> None:
+            notified.append(peer_id)
+
+        engine.on_peer_event = on_peer_event
+        await engine.start("tug", "bell")
+
+        assert set(notified) == {"tug", "bell"}
+
+    @pytest.mark.anyio
     async def test_next_conversation_prompt_includes_score_and_label(
         self, conn: sqlite3.Connection, make_rng: Callable[[int], random.Random]
     ) -> None:

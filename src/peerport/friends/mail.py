@@ -210,3 +210,18 @@ class MailService:
         )
         self.session_mails_sent += 1
         return True
+
+
+CADENCE_CHECK_INTERVAL_SECONDS = 300
+
+
+async def run_cadence_loop(
+    service: MailService,
+) -> None:  # pragma: no cover - async driver
+    """Periodically check every friend's cadence-mail eligibility, forever."""
+    import asyncio  # noqa: PLC0415 - driver-only dependency
+
+    while True:
+        await asyncio.sleep(CADENCE_CHECK_INTERVAL_SECONDS)
+        for friend_id in FRIEND_PAIRS:
+            await service.maybe_generate_cadence_mail(friend_id)

@@ -161,6 +161,30 @@ class TestDecide:
         assert "repeat" in prompt.lower()
 
     @pytest.mark.anyio
+    async def test_hearsay_provider_text_appended_when_present(
+        self, conn: sqlite3.Connection, make_rng: Callable[[int], random.Random]
+    ) -> None:
+        transport = FakeTransport([TransportReply(text=DECIDE_REPLY)])
+        engine = make_engine(conn, make_rng(5), transport)
+        engine.hearsay_provider = lambda peer_id: (
+            "my Keeper said Kai aced the exam." if peer_id == "tug" else None
+        )
+        await engine.decide("tug")
+        prompt = transport.calls[0]["prompt"]
+        assert isinstance(prompt, str)
+        assert "my Keeper said Kai aced the exam." in prompt
+
+    @pytest.mark.anyio
+    async def test_hearsay_provider_none_omits_nothing_extra(
+        self, conn: sqlite3.Connection, make_rng: Callable[[int], random.Random]
+    ) -> None:
+        transport = FakeTransport([TransportReply(text=DECIDE_REPLY)])
+        engine = make_engine(conn, make_rng(5), transport)
+        engine.hearsay_provider = lambda _peer_id: None
+        await engine.decide("tug")
+        assert len(transport.calls) == 1
+
+    @pytest.mark.anyio
     async def test_schema_violation_twice_falls_back_to_rest(
         self, conn: sqlite3.Connection, make_rng: Callable[[int], random.Random]
     ) -> None:

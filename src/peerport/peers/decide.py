@@ -90,6 +90,7 @@ class DecisionEngine:
     on_talk: Callable[[str, str], Awaitable[None]] | None = None
     on_post_board: Callable[[str, str], Awaitable[None]] | None = None
     on_read_board: Callable[[str], Awaitable[None]] | None = None
+    hearsay_provider: Callable[[str], str | None] | None = None
     history: dict[str, deque[ActionDecision]] = field(
         default_factory=lambda: defaultdict(lambda: deque(maxlen=32))
     )
@@ -132,6 +133,9 @@ class DecisionEngine:
             f"{situation}\nWaypoints: {', '.join(sorted(self.sim.worldmap.nodes))}\n"
             f"Peers in town: {', '.join(sorted(self.sim.peers))}"
         )
+        hearsay = self.hearsay_provider(peer_id) if self.hearsay_provider else None
+        if hearsay:
+            variable = f"{variable}\n\n{hearsay}"
         try:
             result = await self.llm.call(
                 role="background",
