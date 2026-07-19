@@ -198,7 +198,7 @@ class LLMClient:
             return LLMResult(skipped=True, reason="rate_limited")
 
         if schema is None:
-            self._record(dispatch, reply, status="ok")
+            self.record_usage(dispatch, reply, "ok")
             return LLMResult(text=reply.text)
         return await self._validate_with_reask(schema, reply, dispatch)
 
@@ -219,15 +219,15 @@ class LLMClient:
                     dispatch.role,
                     dispatch.purpose,
                 )
-                self._record(
-                    dispatch, TransportReply(text=""), status="skipped_rate_limit"
+                self.record_usage(
+                    dispatch, TransportReply(text=""), "skipped_rate_limit"
                 )
                 return None
             except TransportUnavailableError as error:
                 last_error = error
                 if attempt < len(BACKOFF_DELAYS):
                     await self._sleep(BACKOFF_DELAYS[attempt])
-        self._record(dispatch, TransportReply(text=""), status="failed")
+        self.record_usage(dispatch, TransportReply(text=""), "failed")
         message = f"LLM call failed after {len(BACKOFF_DELAYS)} retries: {last_error}"
         raise LLMCallError(message) from last_error
 
@@ -263,12 +263,26 @@ class LLMClient:
         try:
             parsed = schema.model_validate_json(reply.text)
         except ValidationError:
-            self._record(dispatch, reply, status="schema_invalid")
+            self.record_usage(dispatch, reply, "schema_invalid")
             return None
-        self._record(dispatch, reply, status="ok")
+        self.record_usage(dispatch, reply, "ok")
         return parsed
 
-    def _record(self, dispatch: _Dispatch, reply: TransportReply, status: str) -> None:
+    def transport_for_streaming(self) -> StreamingTransport:
+        """Return the transport, asserting it supports streaming.
+
+        Raises:
+            LLMCallError: If the wired transport cannot stream.
+        """
+        if not hasattr(self._transport, "stream_complete"):
+            message = "transport does not support streaming"
+            raise LLMCallError(message)
+        return self._transport  # type: ignore[return-value]
+
+    def record_usage(
+        self, dispatch: _Dispatch, reply: TransportReply, status: str
+    ) -> None:
+        """Write one `usage_log` row for a completed or skipped call."""
         insert_usage(
             self._conn,
             UsageRecord(
@@ -333,4 +347,110 @@ class OpenAITransport:  # pragma: no cover - the real network boundary
             input_tokens=usage.input_tokens if usage is not None else 0,
             cached_tokens=cached,
             output_tokens=usage.output_tokens if usage is not None else 0,
+        )
+
+
+class StreamingTransport(Protocol):
+    """Optional streaming variant of the network boundary (Mate chat)."""
+
+    async def stream_complete(
+        self,
+        *,
+        model: str,
+        prompt: str,
+        max_output_tokens: int,
+        on_delta: Callable[[str], Awaitable[None]],
+    ) -> TransportReply:
+        """Stream one request, invoking *on_delta* per token chunk."""
+        ...
+
+
+DEFAULT_CHAT_MAX_OUTPUT_TOKENS = 1000
+
+
+async def call_stream(
+    client: LLMClient,
+    *,
+    role: str,
+    prompt: PromptParts,
+    on_delta: Callable[[str], Awaitable[None]],
+    purpose: str = "chat",
+) -> LLMResult:
+    """Run one budget-gated streaming call through the gateway.
+
+    Single attempt (no backoff — a broken stream mid-way cannot be
+    transparently retried); rate limits and transient failures degrade
+    to a skipped result rather than raising.
+    """
+    model = client.resolve_model(role)
+    client.budget.check_hard_cap()
+    transport = client.transport_for_streaming()
+    dispatch = _Dispatch(
+        model=model,
+        role=role,
+        purpose=purpose,
+        prompt=assemble_prompt(prompt.fixed, prompt.variable),
+        schema_payload=None,
+        max_output_tokens=DEFAULT_CHAT_MAX_OUTPUT_TOKENS,
+    )
+    try:
+        reply = await transport.stream_complete(
+            model=model,
+            prompt=dispatch.prompt,
+            max_output_tokens=dispatch.max_output_tokens,
+            on_delta=on_delta,
+        )
+    except TransportRateLimitedError:
+        client.record_usage(dispatch, TransportReply(text=""), "skipped_rate_limit")
+        return LLMResult(skipped=True, reason="rate_limited")
+    except TransportUnavailableError:
+        client.record_usage(dispatch, TransportReply(text=""), "failed")
+        return LLMResult(skipped=True, reason="unavailable")
+    client.record_usage(dispatch, reply, "ok")
+    return LLMResult(text=reply.text)
+
+
+class OpenAIStreamingTransport(OpenAITransport):  # pragma: no cover - network boundary
+    """Adds Responses API streaming for the Mate chat path."""
+
+    async def stream_complete(
+        self,
+        *,
+        model: str,
+        prompt: str,
+        max_output_tokens: int,
+        on_delta: Callable[[str], Awaitable[None]],
+    ) -> TransportReply:
+        """Stream one request, forwarding output-text deltas."""
+        import openai  # noqa: PLC0415 - heavy import kept lazy
+
+        try:
+            stream = await self._client.responses.create(
+                model=model,
+                input=prompt,
+                max_output_tokens=max_output_tokens,
+                stream=True,
+            )
+            text_parts: list[str] = []
+            usage_in = usage_cached = usage_out = 0
+            async for event in stream:
+                if event.type == "response.output_text.delta":
+                    text_parts.append(event.delta)
+                    await on_delta(event.delta)
+                elif event.type == "response.completed":
+                    usage = event.response.usage
+                    if usage is not None:
+                        usage_in = usage.input_tokens
+                        usage_out = usage.output_tokens
+                        if usage.input_tokens_details is not None:
+                            usage_cached = usage.input_tokens_details.cached_tokens
+        except openai.RateLimitError as error:
+            raise TransportRateLimitedError(str(error)) from error
+        except (openai.APIError, openai.APITimeoutError) as error:
+            raise TransportUnavailableError(str(error)) from error
+        return TransportReply(
+            text="".join(text_parts),
+            input_tokens=usage_in,
+            cached_tokens=usage_cached,
+            output_tokens=usage_out,
         )

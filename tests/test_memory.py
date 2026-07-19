@@ -6,6 +6,12 @@ import math
 from typing import TYPE_CHECKING
 
 import pytest
+
+from peerport.config import Config
+from peerport.db import open_db
+from peerport.errors import InvalidMemoryKindError
+from peerport.llm.budget import BudgetGuard
+from peerport.llm.client import LLMClient, TransportReply
 from peerport.memory.recall import RecallResult, cosine_similarity, retrieve
 from peerport.memory.stream import (
     MEMORY_KINDS,
@@ -13,12 +19,6 @@ from peerport.memory.stream import (
     clamp_importance,
     unpack_embedding,
 )
-
-from peerport.config import Config
-from peerport.db import open_db
-from peerport.errors import InvalidMemoryKindError
-from peerport.llm.budget import BudgetGuard
-from peerport.llm.client import LLMClient, TransportReply
 from tests.test_llm_client import FakeTransport
 
 if TYPE_CHECKING:

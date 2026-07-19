@@ -145,7 +145,9 @@ class TestUsageRecording:
             [TransportReply(text="hi", input_tokens=612, output_tokens=48)]
         )
         client = make_client(conn, transport)
-        await client.call(role="background", prompt=PromptParts("f", "v"), purpose="decide")
+        await client.call(
+            role="background", prompt=PromptParts("f", "v"), purpose="decide"
+        )
         rows = conn.execute(
             "SELECT model, role, purpose, input_tokens, output_tokens,"
             " est_cost_usd, status FROM usage_log"

@@ -15,6 +15,7 @@ export const TABS = [
 ];
 
 const UNREAD_ELIGIBLE = new Set(["mail", "logbook"]);
+const MAX_INPUT_LINES = 4;
 
 export class Bridge {
   constructor(root, mapPane) {
@@ -65,19 +66,86 @@ export class Bridge {
       body.className = "tab-body hidden";
       body.dataset.tabBody = tab.id;
       if (tab.id === "mate") {
-        const empty = document.createElement("p");
-        empty.className = "empty-note";
-        empty.textContent = t("mate.empty");
-        this.chatInput = document.createElement("input");
-        this.chatInput.className = "chat-input";
-        this.chatInput.placeholder = t("mate.input.placeholder", {
-          mate: t("tab.mate"),
-        });
-        body.append(empty, this.chatInput);
+        this._buildMateBody(body);
       }
       this.bodies[tab.id] = body;
       this.root.append(body);
     }
+  }
+
+  _buildMateBody(body) {
+    this.presenceLine = document.createElement("div");
+    this.presenceLine.className = "presence-line";
+    this.emptyNote = document.createElement("p");
+    this.emptyNote.className = "empty-note";
+    this.emptyNote.textContent = t("mate.empty");
+    this.chatMessages = document.createElement("div");
+    this.chatMessages.className = "chat-messages";
+    this.chatInput = document.createElement("textarea");
+    this.chatInput.className = "chat-input";
+    this.chatInput.rows = 1;
+    this.chatInput.placeholder = t("mate.input.placeholder", {
+      mate: t("tab.mate"),
+    });
+    this.chatInput.addEventListener("input", () => {
+      const lines = this.chatInput.value.split("\n").length;
+      this.chatInput.rows = Math.min(Math.max(lines, 1), MAX_INPUT_LINES);
+    });
+    this.chatInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && !event.shiftKey) {
+        event.preventDefault();
+        this._sendChat();
+      }
+    });
+    body.append(this.presenceLine, this.emptyNote, this.chatMessages, this.chatInput);
+  }
+
+  async _sendChat() {
+    const text = this.chatInput.value.trim();
+    if (!text) {
+      return;
+    }
+    this.emptyNote.classList.add("hidden");
+    const bubble = document.createElement("div");
+    bubble.className = "chat-bubble keeper-bubble";
+    bubble.textContent = text;
+    this.chatMessages.append(bubble);
+    this.chatInput.value = "";
+    this.chatInput.rows = 1;
+    await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    });
+  }
+
+  applyChatDelta(frame) {
+    if (!this.streamingBubble) {
+      this.emptyNote.classList.add("hidden");
+      this.streamingBubble = document.createElement("div");
+      this.streamingBubble.className = "chat-bubble mate-bubble";
+      this.streamingText = document.createElement("span");
+      this.streamingCaret = document.createElement("span");
+      this.streamingCaret.className = "chat-caret";
+      this.streamingBubble.append(this.streamingText, this.streamingCaret);
+      this.chatMessages.append(this.streamingBubble);
+    }
+    this.streamingText.textContent += frame.text;
+  }
+
+  applyChatDone(frame) {
+    if (this.streamingBubble) {
+      this.streamingText.textContent = frame.text;
+      this.streamingCaret.remove();
+      this.streamingBubble = null;
+    }
+    this.chatMessages.scrollTop = this.chatMessages.scrollHeight;
+  }
+
+  applyPresence(frame) {
+    this.presenceLine.textContent = frame.talking_with
+      ? t("mate.presence.talking", { peer: frame.talking_with })
+      : t("mate.presence.at", { place: frame.place ?? "" });
   }
 
   _renderHud() {

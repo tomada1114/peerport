@@ -204,3 +204,59 @@ body {
   outline: 2px solid var(--signal-cyan);
   outline-offset: 2px;
 }
+
+/* --- Mate chat (#18) ---------------------------------------------- */
+
+.presence-line {
+  font-family: var(--font-display);
+  font-size: 10px;
+  color: var(--mist);
+  margin-bottom: 8px;
+}
+
+.chat-messages {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+  margin-bottom: 10px;
+}
+
+.chat-bubble {
+  max-width: 85%;
+  padding: 8px 10px;
+  border-radius: 4px;
+  font-size: 13px;
+  white-space: pre-wrap;
+}
+
+.mate-bubble {
+  align-self: flex-start;
+  background: var(--tide-deep);
+  border-left: 2px solid var(--beacon-amber);
+}
+
+.keeper-bubble {
+  align-self: flex-end;
+  background: transparent;
+  border: 1px solid var(--tide-line);
+}
+
+.chat-caret {
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  margin-left: 2px;
+  background: var(--signal-cyan);
+  animation: caret-blink 1s steps(1) infinite;
+  vertical-align: text-bottom;
+}
+
+@keyframes caret-blink {
+  50% { opacity: 0; }
+}
+
+.chat-input {
+  resize: none;
+  max-height: calc(4 * 1.5em);
+}
