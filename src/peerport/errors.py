@@ -29,3 +29,7 @@ class BudgetExceededError(PeerPortError):
 
 class LLMCallError(PeerPortError):
     """Raised when an LLM call fails after exhausting its retry budget."""
+
+
+class InvalidMemoryKindError(PeerPortError):
+    """Raised when a memory write uses a kind outside the allowed set."""
