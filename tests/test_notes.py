@@ -162,8 +162,9 @@ class TestDispatchNoteCall:
             store, "create", {"title": "Tide Patterns", "content_markdown": "body"}
         )
 
-        assert isinstance(result, dict)
-        assert store.read(result["note_id"]) is not None
+        note_id = result["note_id"]
+        assert isinstance(note_id, str)
+        assert store.read(note_id) is not None
 
     def test_list_dispatches_to_store(self, tmp_path: Path) -> None:
         store = make_store(tmp_path)
@@ -171,8 +172,9 @@ class TestDispatchNoteCall:
 
         result = dispatch_note_call(store, "list", {})
 
-        assert isinstance(result, dict)
-        assert len(result["notes"]) == 1
+        notes = result["notes"]
+        assert isinstance(notes, list)
+        assert len(notes) == 1
 
     @pytest.mark.parametrize("name", ["delete", "remove_note", "delete_note"])
     def test_delete_like_calls_are_rejected(self, tmp_path: Path, name: str) -> None:

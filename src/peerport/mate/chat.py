@@ -155,6 +155,7 @@ class MateChat:
             kind="keeper_note",
             text=f'Filed a note: "{match.title}" — {match.summary}',
         )
+        await self.broadcaster.publish({"t": "event", "kind": "notes_updated"})
 
     async def _summarize(self, keeper_text: str, mate_text: str) -> None:
         summary = await self.llm.call(

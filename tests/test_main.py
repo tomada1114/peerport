@@ -5,11 +5,15 @@ from __future__ import annotations
 import shutil
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING, cast
 
 import pytest
 
 from peerport.__main__ import boot, main, parse_args
 from peerport.db import open_db
+
+if TYPE_CHECKING:
+    from fastapi import FastAPI
 
 REPO_ROOT = Path(__file__).parent.parent
 
@@ -166,7 +170,7 @@ class TestMain:
 
         main([])
 
-        app = uvicorn_run_calls[0]["app"]
+        app = cast("FastAPI", uvicorn_run_calls[0]["app"])
         assert app.state.notes_store is not None
 
     def test_returns_nonzero_on_invalid_config(

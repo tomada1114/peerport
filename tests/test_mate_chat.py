@@ -252,11 +252,13 @@ class TestChatEndToEnd:
             with client.websocket_connect("/ws") as ws:
                 ws.receive_json()  # snapshot
                 client.post("/api/chat", json={"text": "look into tide patterns?"})
-                frames = [ws.receive_json() for _ in range(3)]
+                # +1 for the notes_updated event fired by auto-filing.
+                frames = [ws.receive_json() for _ in range(4)]
 
         done = next(f for f in frames if f["t"] == "chat_done")
         assert done["text"] == "First sentence. Second sentence."
         assert done["filed_note_title"] == "Look into tide patterns"
+        assert any(f["t"] == "event" and f["kind"] == "notes_updated" for f in frames)
         notes = chat.notes.list_notes()
         assert len(notes) == 1
         assert notes[0].title == "Look into tide patterns"

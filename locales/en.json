@@ -20,6 +20,7 @@
   "mate.input.placeholder": "Message {mate}…",
   "mate.empty": "The line to your Mate is open. Say hello.",
   "mate.filed_note": "Filed to Notes → \"{title}\"",
+  "mate.searching": "Off to the Signal Tower to look into it…",
 
   "mail.empty": "No letters yet. News from beyond the harbor takes time.",
   "mail.reply.placeholder": "Write back…",
