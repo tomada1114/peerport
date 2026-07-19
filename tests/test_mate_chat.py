@@ -121,10 +121,15 @@ class TestChatEndToEnd:
                 ws.receive_json()  # snapshot
                 response = client.post("/api/chat", json={"text": "How's the town?"})
                 assert response.status_code == 200
-                frames = [ws.receive_json() for _ in range(4)]
+                # +1 for the "search" flavor-signal event (REQ-003).
+                frames = [ws.receive_json() for _ in range(5)]
 
         deltas = [f["text"] for f in frames if f["t"] == "chat_delta"]
         assert deltas == ["Quiet ", "morning ", "here."]
+        search_events = [
+            f for f in frames if f["t"] == "event" and f["kind"] == "search"
+        ]
+        assert len(search_events) == 1
         done = [f for f in frames if f["t"] == "chat_done"]
         assert len(done) == 1
         assert done[0]["text"] == "Quiet morning here."
@@ -201,6 +206,66 @@ class TestChatEndToEnd:
             client.post("/api/chat", json={"text": "look into tide patterns"})
 
         assert transport.stream_calls[0]["tools"] == [{"type": "web_search"}]
+
+    def test_short_reply_stays_inline_no_note_filed(
+        self, conn: sqlite3.Connection
+    ) -> None:
+        short_reply = " ".join(["word"] * 50)
+        transport = FakeStreamingTransport(
+            stream_tokens=[short_reply],
+            replies=[
+                TransportReply(text=""),  # note-tool round: no tool call
+                TransportReply(text="summary"),
+                TransportReply(text='{"scores": [5]}'),
+            ],
+        )
+        app = create_app(Config(world=WorldConfig(tick_ms=60000)))
+        with TestClient(app) as client:
+            chat = make_chat(conn, app.state.broadcaster, transport)
+            app.state.mate_chat = chat
+            with client.websocket_connect("/ws") as ws:
+                ws.receive_json()  # snapshot
+                client.post("/api/chat", json={"text": "look into tide patterns"})
+                frames = [ws.receive_json() for _ in range(3)]
+
+        done = next(f for f in frames if f["t"] == "chat_done")
+        assert done["text"] == short_reply
+        assert done["filed_note_title"] is None
+        assert chat.notes.list_notes() == []
+
+    def test_long_reply_auto_files_and_sends_digest(
+        self, conn: sqlite3.Connection
+    ) -> None:
+        long_reply = "First sentence. Second sentence. " + " ".join(["word"] * 301)
+        transport = FakeStreamingTransport(
+            stream_tokens=[long_reply],
+            replies=[
+                TransportReply(text=""),  # note-tool round: no tool call
+                TransportReply(text="summary"),
+                TransportReply(text='{"scores": [5]}'),
+            ],
+        )
+        app = create_app(Config(world=WorldConfig(tick_ms=60000)))
+        with TestClient(app) as client:
+            chat = make_chat(conn, app.state.broadcaster, transport)
+            app.state.mate_chat = chat
+            with client.websocket_connect("/ws") as ws:
+                ws.receive_json()  # snapshot
+                client.post("/api/chat", json={"text": "look into tide patterns?"})
+                frames = [ws.receive_json() for _ in range(3)]
+
+        done = next(f for f in frames if f["t"] == "chat_done")
+        assert done["text"] == "First sentence. Second sentence."
+        assert done["filed_note_title"] == "Look into tide patterns"
+        notes = chat.notes.list_notes()
+        assert len(notes) == 1
+        assert notes[0].title == "Look into tide patterns"
+        stored_content = chat.notes.read(notes[0].note_id)
+        assert long_reply in stored_content
+        memory_kinds = [
+            row[0] for row in conn.execute("SELECT kind FROM memories").fetchall()
+        ]
+        assert "keeper_note" in memory_kinds
 
     def test_empty_message_rejected(self, conn: sqlite3.Connection) -> None:
         app = create_app(Config(world=WorldConfig(tick_ms=60000)))

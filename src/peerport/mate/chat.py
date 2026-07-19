@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING
 from peerport.errors import NoteNotFoundError, NoteOperationRejectedError
 from peerport.llm.client import PromptParts, call_stream
 from peerport.mate.notes import NOTE_TOOL_SCHEMAS, dispatch_note_call
+from peerport.mate.research import digest_of, exceeds_threshold, title_from_request
 from peerport.memory.recall import retrieve
 
 if TYPE_CHECKING:
@@ -80,6 +81,11 @@ class MateChat:
             f"{tool_context}"
             "Reply in character, directly to your Keeper."
         )
+        # "Mate is searching" flavor signal (REQ-003): fired before the
+        # call since search necessity is the model's own judgment call,
+        # resolved server-side inside this same streaming request; the
+        # frontend shows the flavor line until the first chat_delta.
+        await self.broadcaster.publish({"t": "event", "kind": "search"})
         result = await call_stream(
             self.llm,
             role="mate",
@@ -88,9 +94,23 @@ class MateChat:
             purpose="chat",
         )
         reply_text = result.text or ""
-        await self.broadcaster.publish({"t": "chat_done", "text": reply_text})
+        chat_text, filed_title = await self._maybe_file_report(text, reply_text)
+        await self.broadcaster.publish(
+            {"t": "chat_done", "text": chat_text, "filed_note_title": filed_title}
+        )
         if reply_text:
             await self._summarize(text, reply_text)
+
+    async def _maybe_file_report(
+        self, keeper_text: str, reply_text: str
+    ) -> tuple[str, str | None]:
+        """Auto-file long write-ups to Notes (REQ-005/006/007)."""
+        if not exceeds_threshold(reply_text):
+            return reply_text, None
+        title = title_from_request(keeper_text)
+        note_id = self.notes.create(title, reply_text)
+        await self._remember_note_action(note_id)
+        return digest_of(reply_text), title
 
     async def _send_delta(self, delta: str) -> None:
         await self.broadcaster.publish({"t": "chat_delta", "text": delta})
