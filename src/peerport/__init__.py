@@ -7,6 +7,7 @@ from importlib.metadata import PackageNotFoundError, version
 from .config import Config, load_config
 from .core import add
 from .db import Database, backup_db, open_db, reset_fresh, rotate_backups
+from .peers.personas import Persona, load_personas
 from .server.app import create_app
 
 try:
@@ -17,11 +18,13 @@ except PackageNotFoundError:
 __all__ = [
     "Config",
     "Database",
+    "Persona",
     "__version__",
     "add",
     "backup_db",
     "create_app",
     "load_config",
+    "load_personas",
     "open_db",
     "reset_fresh",
     "rotate_backups",
