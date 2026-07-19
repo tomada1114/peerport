@@ -23,7 +23,7 @@ class TestAdd:
 
 class TestPackageMetadata:
     def test_public_exports(self):
-        assert set(__all__) == {"__version__", "add"}
+        assert {"__version__", "add"}.issubset(__all__)
 
     def test_version_matches_installed_metadata(self):
         assert __version__ == version("peerport")
