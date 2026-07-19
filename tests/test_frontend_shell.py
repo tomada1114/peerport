@@ -176,3 +176,34 @@ class TestMailFrontendContract:
         css = (STATIC / "css" / "bridge.css").read_text()
         assert ".sender-kai" in css
         assert ".sender-mia" in css
+
+
+class TestNotesFrontendContract:
+    def test_index_dispatches_notes_updated_and_search_events(self) -> None:
+        html = (STATIC / "index.html").read_text()
+        assert "notes_updated" in html
+        assert "peerport:notes-updated" in html
+        assert "applySearchFlavor" in html
+
+    def test_bridge_js_resolves_notes_strings_via_catalog(self) -> None:
+        source = (STATIC / "js" / "bridge.js").read_text()
+        for key in (
+            "notes.empty",
+            "notes.filed_by",
+            "notes.delete",
+            "notes.delete.confirm",
+            "mate.searching",
+            "mate.filed_note",
+        ):
+            assert key in source, f"bridge.js never references catalog key {key}"
+
+    def test_bridge_js_lists_reads_and_deletes_via_api(self) -> None:
+        source = (STATIC / "js" / "bridge.js").read_text()
+        assert "/api/notes" in source
+        assert "DELETE" in source
+        assert "peerport:notes-updated" in source
+
+    def test_notes_delete_button_uses_ember_token(self) -> None:
+        css = (STATIC / "css" / "bridge.css").read_text()
+        assert ".notes-delete-button" in css
+        assert "var(--ember)" in css

@@ -387,3 +387,77 @@ body {
   font-size: 13px;
   white-space: pre-wrap;
 }
+
+/* --- Mate search flavor + filed-note line (#24) ---------------------- */
+
+.search-flavor {
+  color: var(--signal-cyan);
+  font-style: italic;
+}
+
+.filed-note-line {
+  align-self: flex-start;
+  font-size: 12px;
+  color: var(--mist);
+  margin: 0;
+}
+
+/* --- Notes (#25) ------------------------------------------------------ */
+
+.notes-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.notes-card {
+  border: 1px solid var(--tide-line);
+  border-radius: 4px;
+  padding: 8px;
+  cursor: pointer;
+}
+
+.notes-title {
+  font-family: var(--font-display);
+  margin: 0;
+  font-size: 13px;
+}
+
+.notes-meta {
+  font-size: 10px;
+  color: var(--mist);
+}
+
+.notes-card p {
+  margin: 4px 0 0;
+  font-size: 13px;
+}
+
+.notes-detail {
+  border-top: 1px solid var(--tide-line);
+  padding-top: 10px;
+}
+
+.notes-content {
+  font-size: 13px;
+  white-space: pre-wrap;
+  font-family: inherit;
+}
+
+.notes-delete-button {
+  color: var(--ember);
+  border-color: var(--ember);
+}
+
+.notes-delete-confirm {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.notes-delete-confirm-button {
+  color: var(--ember);
+  border-color: var(--ember);
+}

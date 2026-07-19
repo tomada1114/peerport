@@ -11,8 +11,9 @@ touchpoint; tests inject a fake (architecture.md §6).
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
 
 from pydantic import BaseModel, ValidationError
@@ -51,6 +52,15 @@ class TransportRateLimitedError(Exception):
     """HTTP 429; the call is skipped without retry (requirements §4.9)."""
 
 
+@dataclass(frozen=True, slots=True)
+class ToolCall:
+    """One function-tool invocation the model requested (architecture.md §5)."""
+
+    id: str
+    name: str
+    arguments: dict[str, Any]
+
+
 @dataclass(slots=True)
 class TransportReply:
     """Raw model output plus token accounting from one API call."""
@@ -59,6 +69,7 @@ class TransportReply:
     input_tokens: int = 0
     cached_tokens: int = 0
     output_tokens: int = 0
+    tool_calls: list[ToolCall] = field(default_factory=list)
 
 
 class Transport(Protocol):
@@ -71,6 +82,7 @@ class Transport(Protocol):
         prompt: str,
         schema: dict[str, Any] | None,
         max_output_tokens: int,
+        tools: list[dict[str, Any]] | None = None,
     ) -> TransportReply:
         """Send one request; raise the Transport errors on failure."""
         ...
@@ -84,6 +96,7 @@ class LLMResult:
     parsed: BaseModel | None = None
     skipped: bool = False
     reason: str | None = None
+    tool_calls: list[ToolCall] = field(default_factory=list)
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,6 +117,7 @@ class _Dispatch:
     prompt: str
     schema_payload: dict[str, Any] | None
     max_output_tokens: int
+    tools: list[dict[str, Any]] | None = None
 
 
 def estimate_cost_usd(
@@ -202,6 +216,43 @@ class LLMClient:
             return LLMResult(text=reply.text)
         return await self._validate_with_reask(schema, reply, dispatch)
 
+    async def call_with_tools(
+        self,
+        *,
+        role: str,
+        prompt: PromptParts,
+        tools: list[dict[str, Any]],
+        purpose: str = "",
+    ) -> LLMResult:
+        """Run one gated, retried, usage-recorded call offering tool use.
+
+        No Structured Outputs schema is applied. Inspect
+        `result.tool_calls` for any function-tool the model chose to
+        invoke, or `result.text` for a plain reply (e.g. after a hosted
+        tool like `web_search` already resolved server-side).
+
+        Raises:
+            BudgetExceededError: When the daily hard cap refuses dispatch.
+            LLMCallError: After transient failures exhaust the backoff
+                budget, or for an unknown role.
+        """
+        model = self.resolve_model(role)
+        self.budget.check_hard_cap()
+        dispatch = _Dispatch(
+            model=model,
+            role=role,
+            purpose=purpose,
+            prompt=assemble_prompt(prompt.fixed, prompt.variable),
+            schema_payload=None,
+            max_output_tokens=DEFAULT_MAX_OUTPUT_TOKENS,
+            tools=tools,
+        )
+        reply = await self._attempt_with_backoff(dispatch)
+        if reply is None:
+            return LLMResult(skipped=True, reason="rate_limited")
+        self.record_usage(dispatch, reply, "ok")
+        return LLMResult(text=reply.text, tool_calls=reply.tool_calls)
+
     async def _attempt_with_backoff(self, dispatch: _Dispatch) -> TransportReply | None:
         """Dispatch with 1s/2s/4s backoff; `None` means rate-limit skip."""
         last_error: Exception | None = None
@@ -210,6 +261,7 @@ class LLMClient:
                 return await self._transport.complete(
                     model=dispatch.model,
                     prompt=dispatch.prompt,
+                    tools=dispatch.tools,
                     schema=dispatch.schema_payload,
                     max_output_tokens=dispatch.max_output_tokens,
                 )
@@ -303,6 +355,22 @@ class LLMClient:
         )
 
 
+def _extract_tool_calls(
+    response: Any,
+) -> list[ToolCall]:  # pragma: no cover - network boundary
+    """Parse function-tool calls out of one Responses API result."""
+    calls: list[ToolCall] = []
+    for item in getattr(response, "output", None) or []:
+        if getattr(item, "type", None) != "function_call":
+            continue
+        try:
+            arguments = json.loads(item.arguments)
+        except (TypeError, ValueError):
+            arguments = {}
+        calls.append(ToolCall(id=item.call_id, name=item.name, arguments=arguments))
+    return calls
+
+
 class OpenAITransport:  # pragma: no cover - the real network boundary
     """Responses API transport; constructed lazily so tests never touch it."""
 
@@ -319,6 +387,7 @@ class OpenAITransport:  # pragma: no cover - the real network boundary
         prompt: str,
         schema: dict[str, Any] | None,
         max_output_tokens: int,
+        tools: list[dict[str, Any]] | None = None,
     ) -> TransportReply:
         """Send one Responses API request, mapping SDK errors to ours."""
         import openai  # noqa: PLC0415 - heavy import kept lazy
@@ -330,6 +399,8 @@ class OpenAITransport:  # pragma: no cover - the real network boundary
         }
         if schema is not None:
             kwargs["text"] = {"format": {"type": "json_schema", **schema}}
+        if tools is not None:
+            kwargs["tools"] = tools
         try:
             response = await self._client.responses.create(**kwargs)
         except openai.RateLimitError as error:
@@ -347,6 +418,7 @@ class OpenAITransport:  # pragma: no cover - the real network boundary
             input_tokens=usage.input_tokens if usage is not None else 0,
             cached_tokens=cached,
             output_tokens=usage.output_tokens if usage is not None else 0,
+            tool_calls=_extract_tool_calls(response),
         )
 
 
@@ -360,12 +432,19 @@ class StreamingTransport(Protocol):
         prompt: str,
         max_output_tokens: int,
         on_delta: Callable[[str], Awaitable[None]],
+        tools: list[dict[str, Any]] | None = None,
     ) -> TransportReply:
         """Stream one request, invoking *on_delta* per token chunk."""
         ...
 
 
 DEFAULT_CHAT_MAX_OUTPUT_TOKENS = 1000
+
+# Every Mate chat turn offers the hosted web_search tool so the model can
+# judge search necessity itself (requirements.md §4.5 REQ-001) — the sole
+# caller of `call_stream` is Mate chat, so this is unconditional rather
+# than a new parameter every future caller would have to thread through.
+MATE_TOOLS: list[dict[str, Any]] = [{"type": "web_search"}]
 
 
 async def call_stream(
@@ -392,6 +471,7 @@ async def call_stream(
         prompt=assemble_prompt(prompt.fixed, prompt.variable),
         schema_payload=None,
         max_output_tokens=DEFAULT_CHAT_MAX_OUTPUT_TOKENS,
+        tools=MATE_TOOLS if role == "mate" else None,
     )
     try:
         reply = await transport.stream_complete(
@@ -399,6 +479,7 @@ async def call_stream(
             prompt=dispatch.prompt,
             max_output_tokens=dispatch.max_output_tokens,
             on_delta=on_delta,
+            tools=dispatch.tools,
         )
     except TransportRateLimitedError:
         client.record_usage(dispatch, TransportReply(text=""), "skipped_rate_limit")
@@ -420,17 +501,21 @@ class OpenAIStreamingTransport(OpenAITransport):  # pragma: no cover - network b
         prompt: str,
         max_output_tokens: int,
         on_delta: Callable[[str], Awaitable[None]],
+        tools: list[dict[str, Any]] | None = None,
     ) -> TransportReply:
         """Stream one request, forwarding output-text deltas."""
         import openai  # noqa: PLC0415 - heavy import kept lazy
 
+        kwargs: dict[str, Any] = {
+            "model": model,
+            "input": prompt,
+            "max_output_tokens": max_output_tokens,
+            "stream": True,
+        }
+        if tools is not None:
+            kwargs["tools"] = tools
         try:
-            stream = await self._client.responses.create(
-                model=model,
-                input=prompt,
-                max_output_tokens=max_output_tokens,
-                stream=True,
-            )
+            stream = await self._client.responses.create(**kwargs)
             text_parts: list[str] = []
             usage_in = usage_cached = usage_out = 0
             async for event in stream:

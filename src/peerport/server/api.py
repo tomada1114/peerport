@@ -10,6 +10,7 @@ surface; each stub's real behavior is implemented by its owning issue
 from __future__ import annotations
 
 import json
+from dataclasses import asdict
 from pathlib import Path
 
 from fastapi import APIRouter, Request
@@ -180,15 +181,36 @@ async def post_world(request: Request) -> JSONResponse:
 
 
 @router.get("/notes")
-async def get_notes() -> JSONResponse:
-    """List Mate's notes. See #25."""
-    return _stub()
+async def get_notes(request: Request) -> JSONResponse:
+    """List Mate's notes (#25)."""
+    store = getattr(request.app.state, "notes_store", None)
+    if store is None:
+        return _stub()
+    return JSONResponse(
+        content={"notes": [asdict(note) for note in store.list_notes()]}
+    )
 
 
-@router.post("/notes")
-async def post_notes() -> JSONResponse:
-    """Create or update a Mate note. See #25."""
-    return _stub()
+@router.get("/notes/{note_id}")
+async def get_note_detail(note_id: str, request: Request) -> JSONResponse:
+    """Full Markdown content of one note, for the Notes tab view/edit (#25)."""
+    store = getattr(request.app.state, "notes_store", None)
+    if store is None:
+        return _stub(note_id=note_id)
+    detail = store.read_detail(note_id)
+    if detail is None:
+        return JSONResponse(status_code=404, content={"detail": "unknown note"})
+    return JSONResponse(content=asdict(detail))
+
+
+@router.delete("/notes/{note_id}")
+async def delete_note(note_id: str, request: Request) -> JSONResponse:
+    """Keeper-only note deletion (#25); this path is never reachable from Mate."""
+    store = getattr(request.app.state, "notes_store", None)
+    if store is None:
+        return _stub(note_id=note_id)
+    store.delete(note_id)
+    return JSONResponse(content={"ok": True})
 
 
 @router.get("/logbook")

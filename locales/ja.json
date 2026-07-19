@@ -20,6 +20,7 @@
   "mate.input.placeholder": "{mate}にメッセージ…",
   "mate.empty": "Mateとの回線は開いている。まずは挨拶から。",
   "mate.filed_note": "ノートに保管 → 「{title}」",
+  "mate.searching": "調べにシグナルタワーへ向かった…",
 
   "mail.empty": "まだ手紙はない。港の外からの便りには時間がかかる。",
   "mail.reply.placeholder": "返事を書く…",

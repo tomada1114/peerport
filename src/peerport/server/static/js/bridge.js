@@ -77,6 +77,9 @@ export class Bridge {
       if (tab.id === "mail") {
         this._buildMailBody(body);
       }
+      if (tab.id === "notes") {
+        this._buildNotesBody(body);
+      }
       this.bodies[tab.id] = body;
       this.root.append(body);
     }
@@ -88,6 +91,9 @@ export class Bridge {
     this.emptyNote = document.createElement("p");
     this.emptyNote.className = "empty-note";
     this.emptyNote.textContent = t("mate.empty");
+    this.searchFlavor = document.createElement("p");
+    this.searchFlavor.className = "empty-note search-flavor hidden";
+    this.searchFlavor.textContent = t("mate.searching");
     this.chatMessages = document.createElement("div");
     this.chatMessages.className = "chat-messages";
     this.chatInput = document.createElement("textarea");
@@ -106,7 +112,18 @@ export class Bridge {
         this._sendChat();
       }
     });
-    body.append(this.presenceLine, this.emptyNote, this.chatMessages, this.chatInput);
+    body.append(
+      this.presenceLine,
+      this.emptyNote,
+      this.searchFlavor,
+      this.chatMessages,
+      this.chatInput,
+    );
+  }
+
+  applySearchFlavor() {
+    this.emptyNote.classList.add("hidden");
+    this.searchFlavor.classList.remove("hidden");
   }
 
   async _sendChat() {
@@ -129,6 +146,7 @@ export class Bridge {
   }
 
   applyChatDelta(frame) {
+    this.searchFlavor.classList.add("hidden");
     if (!this.streamingBubble) {
       this.emptyNote.classList.add("hidden");
       this.streamingBubble = document.createElement("div");
@@ -143,10 +161,19 @@ export class Bridge {
   }
 
   applyChatDone(frame) {
+    this.searchFlavor.classList.add("hidden");
     if (this.streamingBubble) {
       this.streamingText.textContent = frame.text;
       this.streamingCaret.remove();
       this.streamingBubble = null;
+    }
+    if (frame.filed_note_title) {
+      const filedLine = document.createElement("p");
+      filedLine.className = "filed-note-line";
+      filedLine.textContent = t("mate.filed_note", {
+        title: frame.filed_note_title,
+      });
+      this.chatMessages.append(filedLine);
     }
     this.chatMessages.scrollTop = this.chatMessages.scrollHeight;
   }
@@ -378,6 +405,81 @@ export class Bridge {
     this.mailDetail.append(body, composer, sendButton);
   }
 
+  _buildNotesBody(body) {
+    this.notesEmptyNote = document.createElement("p");
+    this.notesEmptyNote.className = "empty-note hidden";
+    this.notesEmptyNote.textContent = t("notes.empty", { mate: t("tab.mate") });
+
+    this.notesList = document.createElement("div");
+    this.notesList.className = "notes-list";
+
+    this.notesDetail = document.createElement("div");
+    this.notesDetail.className = "notes-detail hidden";
+
+    body.append(this.notesEmptyNote, this.notesList, this.notesDetail);
+    window.addEventListener("peerport:notes-updated", () => this.refreshNotes());
+  }
+
+  async refreshNotes() {
+    const response = await fetch("/api/notes");
+    if (!response.ok) {
+      return;
+    }
+    const data = await response.json();
+    this.notesEmptyNote.classList.toggle("hidden", Boolean(data.notes.length));
+    this.notesList.replaceChildren();
+    for (const note of data.notes) {
+      const row = document.createElement("div");
+      row.className = "notes-card";
+      const title = document.createElement("p");
+      title.className = "notes-title";
+      title.textContent = note.title;
+      const meta = document.createElement("span");
+      meta.className = "notes-meta";
+      meta.textContent = `${note.updated_date} · ${t("notes.filed_by", {
+        mate: t("tab.mate"),
+      })}`;
+      const summary = document.createElement("p");
+      summary.textContent = note.summary;
+      row.append(title, meta, summary);
+      row.addEventListener("click", () => this._openNote(note.note_id));
+      this.notesList.append(row);
+    }
+  }
+
+  async _openNote(noteId) {
+    const response = await fetch(`/api/notes/${noteId}`);
+    if (!response.ok) {
+      return;
+    }
+    const detail = await response.json();
+    this.notesDetail.classList.remove("hidden");
+    this.notesDetail.replaceChildren();
+    const content = document.createElement("pre");
+    content.className = "notes-content";
+    content.textContent = detail.content_markdown;
+    const deleteButton = document.createElement("button");
+    deleteButton.className = "hud-button notes-delete-button";
+    deleteButton.textContent = t("notes.delete");
+    const confirmRow = document.createElement("div");
+    confirmRow.className = "notes-delete-confirm hidden";
+    const confirmText = document.createElement("span");
+    confirmText.textContent = t("notes.delete.confirm");
+    const confirmButton = document.createElement("button");
+    confirmButton.className = "hud-button notes-delete-confirm-button";
+    confirmButton.textContent = t("notes.delete");
+    confirmButton.addEventListener("click", async () => {
+      await fetch(`/api/notes/${noteId}`, { method: "DELETE" });
+      this.notesDetail.classList.add("hidden");
+      await this.refreshNotes();
+    });
+    confirmRow.append(confirmText, confirmButton);
+    deleteButton.addEventListener("click", () => {
+      confirmRow.classList.remove("hidden");
+    });
+    this.notesDetail.append(content, deleteButton, confirmRow);
+  }
+
   async openPeerPopup(peerId) {
     const response = await fetch(`/api/peer/${peerId}`);
     if (!response.ok) {
@@ -493,6 +595,9 @@ export class Bridge {
     }
     if (tabId === "mail") {
       this.refreshMail();
+    }
+    if (tabId === "notes") {
+      this.refreshNotes();
     }
     if (UNREAD_ELIGIBLE.has(tabId)) {
       this.setUnread(tabId, false);

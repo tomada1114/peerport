@@ -48,6 +48,10 @@
               window.dispatchEvent(new CustomEvent("peerport:logbook-updated"));
             } else if (frame.t === "event" && frame.kind === "mail_received") {
               window.dispatchEvent(new CustomEvent("peerport:mail-updated"));
+            } else if (frame.t === "event" && frame.kind === "notes_updated") {
+              window.dispatchEvent(new CustomEvent("peerport:notes-updated"));
+            } else if (frame.t === "event" && frame.kind === "search") {
+              bridge.applySearchFlavor();
             }
           },
           onDisconnect: () => bridge.setReconnecting(true),

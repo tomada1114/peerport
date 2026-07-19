@@ -5,11 +5,15 @@ from __future__ import annotations
 import shutil
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING, cast
 
 import pytest
 
 from peerport.__main__ import boot, main, parse_args
 from peerport.db import open_db
+
+if TYPE_CHECKING:
+    from fastapi import FastAPI
 
 REPO_ROOT = Path(__file__).parent.parent
 
@@ -153,6 +157,21 @@ class TestMain:
 
         assert exit_code == 0
         assert (tmp_path / "data" / "peerport.db").exists()
+
+    @pytest.mark.usefixtures("world_files")
+    def test_notes_store_wired_without_api_key(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        uvicorn_run_calls: list[dict[str, object]],
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        main([])
+
+        app = cast("FastAPI", uvicorn_run_calls[0]["app"])
+        assert app.state.notes_store is not None
 
     def test_returns_nonzero_on_invalid_config(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
