@@ -33,3 +33,11 @@ class LLMCallError(PeerPortError):
 
 class InvalidMemoryKindError(PeerPortError):
     """Raised when a memory write uses a kind outside the allowed set."""
+
+
+class NoteNotFoundError(PeerPortError):
+    """Raised when `append`/`read` targets a nonexistent note id."""
+
+
+class NoteOperationRejectedError(PeerPortError):
+    """Raised when a function call names an operation outside the 5 exposed to Mate."""
