@@ -336,3 +336,54 @@ body {
   font-size: 11px;
   margin: 0 0 4px;
 }
+
+/* --- Mail (#23) ------------------------------------------------------
+   Sender edge colors are provisional pending #28's final master palette
+   (Kai reuses --ember, already a warm coral; Mia's soft green is a
+   local placeholder since no green token exists yet). */
+
+.mail-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.mail-card {
+  border: 1px solid var(--tide-line);
+  border-left: 3px solid var(--mist);
+  border-radius: 4px;
+  padding: 8px;
+  cursor: pointer;
+  position: relative;
+}
+
+.mail-card.sender-kai {
+  border-left-color: var(--ember);
+}
+
+.mail-card.sender-mia {
+  border-left-color: #8cc7a1;
+}
+
+.mail-card p {
+  margin: 4px 0 0;
+  font-size: 13px;
+}
+
+.mail-date {
+  font-family: var(--font-display);
+  font-size: 10px;
+  color: var(--mist);
+  margin-left: 8px;
+}
+
+.mail-detail {
+  border-top: 1px solid var(--tide-line);
+  padding-top: 10px;
+}
+
+.mail-detail p {
+  font-size: 13px;
+  white-space: pre-wrap;
+}

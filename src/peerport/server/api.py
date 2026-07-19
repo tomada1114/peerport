@@ -24,6 +24,7 @@ from peerport.db import (
     list_relationships,
     mark_mail_read,
 )
+from peerport.world.clock import WorldClock
 
 router = APIRouter(prefix="/api")
 
@@ -87,7 +88,7 @@ async def get_board(request: Request) -> JSONResponse:
     return JSONResponse(content={"posts": list_board_posts(conn)})
 
 
-def _mail_to_dict(mail: Mail) -> dict[str, object]:
+def _mail_to_dict(mail: Mail, clock: WorldClock) -> dict[str, object]:
     return {
         "id": mail.id,
         "friend_id": mail.friend_id,
@@ -95,6 +96,7 @@ def _mail_to_dict(mail: Mail) -> dict[str, object]:
         "subject": mail.subject,
         "body": mail.body,
         "ts_real": mail.ts_real,
+        "world_day": clock.day(mail.ts_world) if mail.ts_world is not None else None,
         "read": mail.read,
         "parent_id": mail.parent_id,
     }
@@ -106,7 +108,11 @@ async def get_mail_list(request: Request) -> JSONResponse:
     conn = getattr(request.app.state, "db_conn", None)
     if conn is None:
         return _stub()
-    return JSONResponse(content={"mails": [_mail_to_dict(m) for m in list_mails(conn)]})
+    simulation = getattr(request.app.state, "simulation", None)
+    clock = simulation.clock if simulation is not None else WorldClock()
+    return JSONResponse(
+        content={"mails": [_mail_to_dict(m, clock) for m in list_mails(conn)]}
+    )
 
 
 @router.post("/mail/{mail_id}/read")

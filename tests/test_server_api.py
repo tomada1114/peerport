@@ -76,7 +76,13 @@ class TestGetMail:
         conn = open_db(tmp_path / "mail_api.db")
         insert_mail(
             conn,
-            NewMail(friend_id="kai", direction="in", subject="Hi", body="body"),
+            NewMail(
+                friend_id="kai",
+                direction="in",
+                subject="Hi",
+                body="body",
+                ts_world=7200,
+            ),
         )
         app = create_app()
         with TestClient(app) as client:
@@ -86,6 +92,7 @@ class TestGetMail:
 
         assert response.status_code == 200
         mails = response.json()["mails"]
+        assert mails[0]["world_day"] == 2
         assert len(mails) == 1
         assert mails[0]["friend_id"] == "kai"
         assert mails[0]["read"] is False

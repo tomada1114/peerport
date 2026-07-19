@@ -74,6 +74,9 @@ export class Bridge {
       if (tab.id === "logbook") {
         this._buildLogbookBody(body);
       }
+      if (tab.id === "mail") {
+        this._buildMailBody(body);
+      }
       this.bodies[tab.id] = body;
       this.root.append(body);
     }
@@ -293,6 +296,88 @@ export class Bridge {
     }
   }
 
+  _buildMailBody(body) {
+    this.mailEmptyNote = document.createElement("p");
+    this.mailEmptyNote.className = "empty-note hidden";
+    this.mailEmptyNote.textContent = t("mail.empty");
+
+    this.mailList = document.createElement("div");
+    this.mailList.className = "mail-list";
+
+    this.mailDetail = document.createElement("div");
+    this.mailDetail.className = "mail-detail hidden";
+
+    body.append(this.mailEmptyNote, this.mailList, this.mailDetail);
+    window.addEventListener("peerport:mail-updated", () => {
+      this.refreshMail();
+      if (this.activeTab !== "mail") {
+        this.setUnread("mail", true);
+      }
+    });
+  }
+
+  async refreshMail() {
+    const response = await fetch("/api/mail");
+    if (!response.ok) {
+      return;
+    }
+    const data = await response.json();
+    this.mailEmptyNote.classList.toggle("hidden", Boolean(data.mails.length));
+    this.mailList.replaceChildren();
+    for (const mail of data.mails) {
+      const row = document.createElement("div");
+      row.className = `mail-card sender-${mail.friend_id}`;
+      if (!mail.read) {
+        const dot = document.createElement("span");
+        dot.className = "unread-dot";
+        row.append(dot);
+      }
+      const sender = document.createElement("span");
+      sender.className = "author-chip";
+      sender.textContent = mail.friend_id;
+      const subject = document.createElement("p");
+      subject.textContent = mail.subject;
+      const date = document.createElement("span");
+      date.className = "mail-date";
+      date.textContent =
+        mail.world_day != null ? t("hud.day", { n: mail.world_day }) : "";
+      row.append(sender, date, subject);
+      row.addEventListener("click", () => this._openMail(mail));
+      this.mailList.append(row);
+    }
+  }
+
+  async _openMail(mail) {
+    if (!mail.read) {
+      await fetch(`/api/mail/${mail.id}/read`, { method: "POST" });
+      await this.refreshMail();
+    }
+    this.mailDetail.classList.remove("hidden");
+    this.mailDetail.replaceChildren();
+    const body = document.createElement("p");
+    body.textContent = mail.body;
+    const composer = document.createElement("textarea");
+    composer.className = "chat-input";
+    composer.rows = 2;
+    composer.placeholder = t("mail.reply.placeholder");
+    const sendButton = document.createElement("button");
+    sendButton.className = "hud-button";
+    sendButton.textContent = t("mail.send");
+    sendButton.addEventListener("click", async () => {
+      const text = composer.value.trim();
+      if (!text) {
+        return;
+      }
+      await fetch(`/api/mail/${mail.id}/reply`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
+      });
+      composer.value = "";
+    });
+    this.mailDetail.append(body, composer, sendButton);
+  }
+
   async openPeerPopup(peerId) {
     const response = await fetch(`/api/peer/${peerId}`);
     if (!response.ok) {
@@ -405,6 +490,9 @@ export class Bridge {
     }
     if (tabId === "logbook") {
       this.refreshLogbook();
+    }
+    if (tabId === "mail") {
+      this.refreshMail();
     }
     if (UNREAD_ELIGIBLE.has(tabId)) {
       this.setUnread(tabId, false);

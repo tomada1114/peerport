@@ -125,6 +125,7 @@ _SCHEMA_UPGRADES = (
     ("relationships", "last_delta", "INTEGER"),
     ("board_posts", "created_at", "INTEGER"),
     ("mails", "parent_id", "INTEGER"),
+    ("mails", "ts_world", "INTEGER"),
 )
 
 
@@ -534,6 +535,7 @@ class Mail:
     ts_real: int
     read: bool
     parent_id: int | None = None
+    ts_world: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -546,6 +548,7 @@ class NewMail:
     body: str
     parent_id: int | None = None
     ts_real: int | None = None
+    ts_world: int | None = None
 
 
 def _row_to_mail(row: tuple[object, ...]) -> Mail:
@@ -558,6 +561,7 @@ def _row_to_mail(row: tuple[object, ...]) -> Mail:
         ts_real=row[5],  # type: ignore[arg-type]
         read=bool(row[6]),
         parent_id=row[7],  # type: ignore[arg-type]
+        ts_world=row[8],  # type: ignore[arg-type]
     )
 
 
@@ -573,7 +577,7 @@ def insert_mail(conn: sqlite3.Connection, mail: NewMail) -> int:
     with conn:
         cursor = conn.execute(
             "INSERT INTO mails (friend_id, direction, subject, body, ts_real,"
-            " read, parent_id) VALUES (?, ?, ?, ?, ?, 0, ?)",
+            " read, parent_id, ts_world) VALUES (?, ?, ?, ?, ?, 0, ?, ?)",
             (
                 mail.friend_id,
                 mail.direction,
@@ -581,6 +585,7 @@ def insert_mail(conn: sqlite3.Connection, mail: NewMail) -> int:
                 mail.body,
                 timestamp,
                 mail.parent_id,
+                mail.ts_world,
             ),
         )
     return int(cursor.lastrowid or 0)
@@ -589,7 +594,8 @@ def insert_mail(conn: sqlite3.Connection, mail: NewMail) -> int:
 def list_mails(conn: sqlite3.Connection) -> list[Mail]:
     """All mails, newest first."""
     rows = conn.execute(
-        "SELECT id, friend_id, direction, subject, body, ts_real, read, parent_id"
+        "SELECT id, friend_id, direction, subject, body, ts_real, read, parent_id,"
+        " ts_world"
         " FROM mails ORDER BY ts_real DESC, id DESC"
     ).fetchall()
     return [_row_to_mail(row) for row in rows]
@@ -598,7 +604,8 @@ def list_mails(conn: sqlite3.Connection) -> list[Mail]:
 def get_mail(conn: sqlite3.Connection, mail_id: int) -> Mail | None:
     """One mail row by id, or `None` if it does not exist."""
     row = conn.execute(
-        "SELECT id, friend_id, direction, subject, body, ts_real, read, parent_id"
+        "SELECT id, friend_id, direction, subject, body, ts_real, read, parent_id,"
+        " ts_world"
         " FROM mails WHERE id = ?",
         (mail_id,),
     ).fetchone()

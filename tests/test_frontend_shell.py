@@ -152,3 +152,27 @@ class TestLogbookFrontendContract:
         assert "/api/logbook" in source
         assert "peerport:logbook-updated" in source
         assert "applyDigest" in source
+
+
+class TestMailFrontendContract:
+    def test_index_dispatches_mail_updated_frame(self) -> None:
+        html = (STATIC / "index.html").read_text()
+        assert "mail_received" in html
+        assert "peerport:mail-updated" in html
+
+    def test_bridge_js_resolves_mail_strings_via_catalog(self) -> None:
+        source = (STATIC / "js" / "bridge.js").read_text()
+        for key in ("mail.empty", "mail.reply.placeholder", "mail.send"):
+            assert key in source, f"bridge.js never references catalog key {key}"
+
+    def test_bridge_js_lists_and_replies_via_api(self) -> None:
+        source = (STATIC / "js" / "bridge.js").read_text()
+        assert "/api/mail" in source
+        assert "/reply" in source
+        assert "/read" in source
+        assert "peerport:mail-updated" in source
+
+    def test_mail_css_has_distinct_sender_edge_colors(self) -> None:
+        css = (STATIC / "css" / "bridge.css").read_text()
+        assert ".sender-kai" in css
+        assert ".sender-mia" in css

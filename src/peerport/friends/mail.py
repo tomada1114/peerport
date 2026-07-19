@@ -36,11 +36,20 @@ from peerport.llm.prompts import WORLD_RULES, MailLetter, build_fixed_prefix
 if TYPE_CHECKING:
     import sqlite3
     from collections.abc import Callable, Mapping
+    from typing import Protocol
 
     from peerport.llm.client import LLMClient
     from peerport.memory.stream import MemoryStream
     from peerport.peers.personas import Persona
     from peerport.world.clock import WorldClock
+
+    class Publisher(Protocol):
+        """Anything with an async publish(frame) method."""
+
+        async def publish(self, message: dict[str, object]) -> None:
+            """Fan a frame out to connected clients."""
+            ...
+
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +88,7 @@ class MailService:
     personas: Mapping[str, Persona]
     clock: WorldClock
     now_world: Callable[[], int]
+    broadcaster: Publisher | None = None
     cadence_days: int = DEFAULT_CADENCE_DAYS
     session_mails_sent: int = 0
 
@@ -148,6 +158,7 @@ class MailService:
                 subject=f"Re: {original.subject}",
                 body=text,
                 parent_id=mail_id,
+                ts_world=self.now_world(),
             ),
         )
         return await self._maybe_generate(
@@ -186,6 +197,7 @@ class MailService:
                 direction="in",
                 subject=letter.subject,
                 body=letter.body,
+                ts_world=self.now_world(),
             ),
         )
         await self.memory.write(
@@ -209,6 +221,10 @@ class MailService:
             ),
         )
         self.session_mails_sent += 1
+        if self.broadcaster is not None:
+            await self.broadcaster.publish(
+                {"t": "event", "kind": "mail_received", "friend_id": friend_id}
+            )
         return True
 
 

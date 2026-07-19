@@ -102,3 +102,26 @@ class TestLogbookBoot:
         )
         digest_frame = next(frame for frame in frames if frame["t"] == "digest")
         assert "Tug tidied the pier." in digest_frame["text"]
+
+
+class FakeMailServiceForBoot:
+    def __init__(self) -> None:
+        self.broadcaster: object | None = None
+
+    async def maybe_generate_cadence_mail(self, friend_id: str) -> bool:
+        del friend_id
+        return False
+
+
+class TestMailBroadcasterWiring:
+    def test_broadcaster_attached_at_lifespan_startup(self) -> None:
+        # app.state.broadcaster does not exist until the lifespan runs, but
+        # _wire_friends (called before uvicorn.run()) constructs the mail
+        # service beforehand; the lifespan must attach it lazily instead
+        # of the service being built with a broadcaster up front.
+        app = create_app()
+        service = FakeMailServiceForBoot()
+        app.state.mail_service = service
+        with TestClient(app):
+            assert service.broadcaster is app.state.broadcaster
+            assert app.state.broadcaster is not None

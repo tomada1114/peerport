@@ -125,11 +125,13 @@ def create_app(
             else []
         )
         mail_service = getattr(app.state, "mail_service", None)
-        mail_tasks = (
-            [asyncio.create_task(run_cadence_loop(mail_service))]
-            if mail_service is not None
-            else []
-        )
+        mail_tasks = []
+        if mail_service is not None:
+            # `_wire_friends` runs before the lifespan starts, so the
+            # broadcaster (created a few lines above) is not yet on
+            # app.state at wire time; attach it here instead.
+            mail_service.broadcaster = app.state.broadcaster
+            mail_tasks = [asyncio.create_task(run_cadence_loop(mail_service))]
         try:
             yield
         finally:
