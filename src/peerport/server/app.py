@@ -20,6 +20,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from peerport.config import Config
+from peerport.logbook import run_boot_generation
 from peerport.server.api import router as api_router
 from peerport.server.state import Broadcaster, WorldState, tick_state
 from peerport.server.ws import router as ws_router
@@ -108,10 +109,24 @@ def create_app(
             if engine is not None
             else []
         )
+        logbook_service = getattr(app.state, "logbook_service", None)
+        logbook_tasks = (
+            [
+                asyncio.create_task(
+                    run_boot_generation(
+                        logbook_service,
+                        app.state.broadcaster,
+                        weekly_enabled=resolved_config.logbook.weekly_summary,
+                    )
+                )
+            ]
+            if logbook_service is not None
+            else []
+        )
         try:
             yield
         finally:
-            for task in (*scheduler_tasks, tick_task):
+            for task in (*scheduler_tasks, *logbook_tasks, tick_task):
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await task

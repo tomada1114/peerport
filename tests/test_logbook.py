@@ -21,10 +21,12 @@ from peerport.logbook import (
     MAX_EVENTS,
     LogbookService,
     event_count_for_minutes,
+    run_boot_generation,
 )
 from peerport.memory.stream import MemoryStream
 from peerport.peers.personas import load_personas
 from peerport.world.clock import WorldClock
+from tests.test_converse import FakeBroadcaster
 from tests.test_llm_client import FakeTransport
 from tests.test_memory import FakeEmbedder
 
@@ -367,3 +369,55 @@ class TestDigestText:
 
         assert "Tug tidied the pier." in digest
         assert digest.lower().startswith("welcome back")
+
+
+class TestRunBootGeneration:
+    @pytest.mark.anyio
+    async def test_absence_report_publishes_digest_and_logbook_updated(
+        self, conn: sqlite3.Connection
+    ) -> None:
+        now = 1_700_010_000
+        save_last_shutdown_ts_real(conn, now - ABSENCE_THRESHOLD_SECONDS)
+        transport = FakeTransport(
+            [events_reply([{"peer_ids": ["tug"], "text": "Tug tidied the pier."}])]
+        )
+        service = make_service(conn, transport, now_real=now)
+        broadcaster = FakeBroadcaster()
+
+        await run_boot_generation(service, broadcaster, weekly_enabled=False)
+
+        digest_frames = [f for f in broadcaster.frames if f["t"] == "digest"]
+        event_frames = [
+            f
+            for f in broadcaster.frames
+            if f["t"] == "event" and f["kind"] == "logbook_updated"
+        ]
+        assert len(digest_frames) == 1
+        assert "Tug tidied the pier." in digest_frames[0]["text"]
+        assert len(event_frames) == 1
+
+    @pytest.mark.anyio
+    async def test_no_absence_no_weekly_publishes_nothing(
+        self, conn: sqlite3.Connection
+    ) -> None:
+        service = make_service(conn, FakeTransport([]))
+        broadcaster = FakeBroadcaster()
+
+        await run_boot_generation(service, broadcaster, weekly_enabled=False)
+
+        assert broadcaster.frames == []
+
+    @pytest.mark.anyio
+    async def test_weekly_only_publishes_logbook_updated_without_digest(
+        self, conn: sqlite3.Connection
+    ) -> None:
+        transport = FakeTransport(
+            [events_reply([{"peer_ids": ["kai"], "text": "Quiet week at the pier."}])]
+        )
+        service = make_service(conn, transport, world_seconds=6 * 7200)  # day 7
+        broadcaster = FakeBroadcaster()
+
+        await run_boot_generation(service, broadcaster, weekly_enabled=True)
+
+        assert [f["t"] for f in broadcaster.frames] == ["event"]
+        assert broadcaster.frames[0]["kind"] == "logbook_updated"

@@ -39,3 +39,25 @@ class TestApiStubs:
             response = client.get("/api/peer/beacon")
 
         assert response.json()["peer_id"] == "beacon"
+
+
+class FakeLogbookService:
+    def read_logbook(self) -> dict[str, object]:
+        return {
+            "while_away": [{"text": "Tug tidied the pier.", "ts_world": 10}],
+            "chronicle": [{"day": 1, "entries": ["Tug tidied the pier."]}],
+        }
+
+
+class TestGetLogbook:
+    def test_returns_read_logbook_data_when_service_wired(self) -> None:
+        app = create_app()
+        with TestClient(app) as client:
+            app.state.logbook_service = FakeLogbookService()
+            response = client.get("/api/logbook")
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "while_away": [{"text": "Tug tidied the pier.", "ts_world": 10}],
+            "chronicle": [{"day": 1, "entries": ["Tug tidied the pier."]}],
+        }

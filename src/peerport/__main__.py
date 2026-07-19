@@ -12,6 +12,7 @@ import argparse
 import logging
 import os
 import random
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -25,12 +26,14 @@ from peerport.db import (
     open_db,
     reset_fresh,
     rotate_backups,
+    save_last_shutdown_ts_real,
     save_world_seconds,
 )
 from peerport.errors import ConfigError, MapDataError, PersonaValidationError
 from peerport.llm.budget import BudgetGuard
 from peerport.llm.client import LLMClient, OpenAIStreamingTransport, OpenAITransport
 from peerport.llm.prompts import build_fixed_prefix
+from peerport.logbook import LogbookService
 from peerport.mate.chat import MateChat
 from peerport.memory.stream import MemoryStream, OpenAIEmbedder
 from peerport.peers.converse import ConversationEngine
@@ -202,6 +205,36 @@ def _wire_peer_society(
     app.state.conversation_engine = conversations
 
 
+def _wire_logbook(
+    app: FastAPI,
+    config: Config,
+    conn: sqlite3.Connection,
+    personas: dict[str, Persona],
+    simulation: Simulation,
+) -> None:
+    """Attach the Logbook service when an API key is available.
+
+    Without OPENAI_API_KEY, `/api/logbook` answers 501 like the other
+    LLM-gated routes; historical entries still persist across restarts
+    once a key becomes available.
+    """
+    if not os.environ.get("OPENAI_API_KEY"):
+        return
+    budget = BudgetGuard(conn, config.budget.soft_cap_usd, config.budget.hard_cap_usd)
+    llm = LLMClient(
+        config=config, conn=conn, budget=budget, transport=OpenAITransport()
+    )
+    app.state.logbook_service = LogbookService(
+        llm=llm,
+        conn=conn,
+        memory=MemoryStream(conn, OpenAIEmbedder()),
+        personas=personas,
+        locations=list(simulation.worldmap.nodes),
+        clock=simulation.clock,
+        now_world=lambda: simulation.state.world_seconds,
+    )
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """CLI entry point (console script `peerport`).
 
@@ -249,6 +282,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     app.state.personas = personas
     _wire_mate_chat(app, config, conn, personas, simulation)
     _wire_peer_society(app, config, conn, personas, simulation)
+    _wire_logbook(app, config, conn, personas, simulation)
     uvicorn.run(
         app,
         host="127.0.0.1",
@@ -256,6 +290,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         log_level="debug" if args.debug else "info",
     )
     save_world_seconds(conn, simulation.state.world_seconds)
+    save_last_shutdown_ts_real(conn, int(time.time()))
     conn.close()
     return 0
 

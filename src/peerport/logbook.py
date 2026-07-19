@@ -43,11 +43,20 @@ from peerport.peers.converse import SCORE_MAX, SCORE_MIN
 if TYPE_CHECKING:
     import sqlite3
     from collections.abc import Callable, Mapping, Sequence
+    from typing import Protocol
 
     from peerport.llm.client import LLMClient
     from peerport.memory.stream import MemoryStream
     from peerport.peers.personas import Persona
     from peerport.world.clock import WorldClock
+
+    class Publisher(Protocol):
+        """Anything with an async publish(frame) method."""
+
+        async def publish(self, message: dict[str, object]) -> None:
+            """Fan a frame out to connected clients."""
+            ...
+
 
 logger = logging.getLogger(__name__)
 
@@ -250,3 +259,23 @@ class LogbookService:
             status = row[0] if row is not None else "no notable recent activity"
             lines.append(f"- {peer_id}: {status}")
         return "\n".join(lines)
+
+
+async def run_boot_generation(
+    service: LogbookService, broadcaster: Publisher, *, weekly_enabled: bool
+) -> None:
+    """Boot-time absence report + weekly summary, broadcasting the results.
+
+    Publishes a `digest` frame with the "While you were away..." text for
+    the Mate tab (#18 owns rendering it) when an absence report generated,
+    and a `logbook_updated` event so the Bridge can refresh the Logbook
+    tab and light its unread dot.
+    """
+    absence_events = await service.maybe_generate_absence_report()
+    weekly_events = await service.maybe_generate_weekly_summary(enabled=weekly_enabled)
+    if absence_events:
+        await broadcaster.publish(
+            {"t": "digest", "text": service.digest_text(absence_events)}
+        )
+    if absence_events or weekly_events:
+        await broadcaster.publish({"t": "event", "kind": "logbook_updated"})

@@ -135,9 +135,12 @@ async def post_notes() -> JSONResponse:
 
 
 @router.get("/logbook")
-async def get_logbook() -> JSONResponse:
-    """Fetch the absence/weekly chronicle log. See #22."""
-    return _stub()
+async def get_logbook(request: Request) -> JSONResponse:
+    """Fetch the absence/weekly chronicle log (#22)."""
+    service = getattr(request.app.state, "logbook_service", None)
+    if service is None:
+        return _stub()
+    return JSONResponse(content=service.read_logbook())
 
 
 @router.get("/usage")

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shutil
+import time
 from pathlib import Path
 
 import pytest
@@ -230,3 +231,23 @@ class TestMain:
         finally:
             conn.close()
         assert row is not None
+
+    @pytest.mark.usefixtures("world_files")
+    def test_last_shutdown_ts_real_persisted_after_shutdown(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+
+        before = int(time.time())
+        main([])
+        after = int(time.time())
+
+        conn = open_db(tmp_path / "data" / "peerport.db")
+        try:
+            row = conn.execute(
+                "SELECT value FROM world_state WHERE key = 'last_shutdown_ts_real'"
+            ).fetchone()
+        finally:
+            conn.close()
+        assert row is not None
+        assert before <= int(row[0]) <= after
