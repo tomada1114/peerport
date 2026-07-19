@@ -238,3 +238,23 @@ class Database:
                 raise DatabaseShutdownError(msg) from None
         else:
             self.consecutive_failures = 0
+
+
+WORLD_SECONDS_KEY = "world_seconds"
+
+
+def load_world_seconds(conn: sqlite3.Connection) -> int:
+    """Read the persisted world clock, or 0 for a brand-new world."""
+    row = conn.execute(
+        "SELECT value FROM world_state WHERE key = ?", (WORLD_SECONDS_KEY,)
+    ).fetchone()
+    return int(row[0]) if row is not None else 0
+
+
+def save_world_seconds(conn: sqlite3.Connection, world_seconds: int) -> None:
+    """Persist the world clock so it does not advance while stopped."""
+    with conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO world_state (key, value) VALUES (?, ?)",
+            (WORLD_SECONDS_KEY, str(world_seconds)),
+        )

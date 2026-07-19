@@ -2,15 +2,26 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import shutil
+from pathlib import Path
 
 import pytest
 
 from peerport.__main__ import boot, main, parse_args
 from peerport.db import open_db
 
-if TYPE_CHECKING:
-    from pathlib import Path
+REPO_ROOT = Path(__file__).parent.parent
+
+
+@pytest.fixture
+def world_files(tmp_path: Path) -> None:
+    """Copy the repo personas and map into the test cwd for full boots."""
+    shutil.copytree(REPO_ROOT / "personas", tmp_path / "personas")
+    (tmp_path / "data" / "map").mkdir(parents=True)
+    shutil.copy(
+        REPO_ROOT / "data" / "map" / "port.json",
+        tmp_path / "data" / "map" / "port.json",
+    )
 
 
 class TestParseArgs:
@@ -131,6 +142,7 @@ class TestMain:
         monkeypatch.setattr("peerport.__main__.uvicorn.run", _fake_run)
         return calls
 
+    @pytest.mark.usefixtures("world_files")
     def test_returns_zero_on_successful_boot(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -151,6 +163,7 @@ class TestMain:
 
         assert exit_code != 0
 
+    @pytest.mark.usefixtures("world_files")
     def test_fresh_flag_via_cli_empties_prior_data(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -174,6 +187,7 @@ class TestMain:
             reopened.close()
         assert count == 0
 
+    @pytest.mark.usefixtures("world_files")
     def test_starts_uvicorn_on_the_configured_port(
         self,
         tmp_path: Path,
@@ -189,3 +203,30 @@ class TestMain:
 
         assert len(uvicorn_run_calls) == 1
         assert uvicorn_run_calls[0]["port"] == 9001
+
+    def test_returns_nonzero_when_map_data_missing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        shutil.copytree(REPO_ROOT / "personas", tmp_path / "personas")
+
+        exit_code = main([])
+
+        assert exit_code == 1
+
+    @pytest.mark.usefixtures("world_files")
+    def test_world_clock_persisted_after_shutdown(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+
+        main([])
+
+        conn = open_db(tmp_path / "data" / "peerport.db")
+        try:
+            row = conn.execute(
+                "SELECT value FROM world_state WHERE key = 'world_seconds'"
+            ).fetchone()
+        finally:
+            conn.close()
+        assert row is not None

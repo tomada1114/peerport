@@ -39,6 +39,9 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     broadcaster: Broadcaster = websocket.app.state.broadcaster
 
     await websocket.send_json(snapshot(state))
+    simulation = getattr(websocket.app.state, "simulation", None)
+    if simulation is not None:
+        await websocket.send_json(simulation.clock_frame())
 
     queue: asyncio.Queue[dict[str, Any]] = broadcaster.subscribe()
     try:

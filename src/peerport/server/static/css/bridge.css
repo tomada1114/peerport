@@ -1,0 +1,206 @@
+/* bridge.css — Bridge shell layout, tab rail, HUD chips (#15).
+   Layout per D-003: map hero left, fixed 380px Bridge right; below
+   1024px the two stack vertically with the same tab rail. */
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: var(--harbor-night);
+  color: var(--foam);
+  font-family: var(--font-body);
+}
+
+#app {
+  display: flex;
+  height: 100vh;
+}
+
+#map-pane {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+
+#bridge {
+  width: 380px;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  background: var(--tide-deep);
+  border-left: 2px solid var(--tide-line);
+}
+
+@media (max-width: 1023px) {
+  #app {
+    flex-direction: column;
+  }
+
+  #map-pane {
+    flex: none;
+    aspect-ratio: 16 / 9;
+    width: 100%;
+  }
+
+  #bridge {
+    width: 100%;
+    flex: 1;
+    border-left: none;
+    border-top: 2px solid var(--tide-line);
+  }
+}
+
+/* --- Tab rail ------------------------------------------------------- */
+
+.tab-rail {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 4px 0;
+  background: var(--harbor-night);
+  border-bottom: 1px solid var(--tide-line);
+}
+
+.tab {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 8px;
+  border: none;
+  background: transparent;
+  color: var(--mist);
+  font-family: var(--font-display);
+  font-size: 11px;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+}
+
+.tab .tab-icon {
+  width: 16px;
+  height: 16px;
+  background: var(--foam);
+  display: inline-block;
+}
+
+.tab.active {
+  color: var(--foam);
+  border-bottom-color: var(--beacon-amber);
+}
+
+.tab .unread-dot {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--beacon-amber);
+}
+
+.reconnect-chip {
+  margin-left: auto;
+  padding: 2px 8px;
+  font-family: var(--font-display);
+  font-size: 10px;
+  color: var(--mist);
+  background: color-mix(in srgb, var(--tide-deep) 80%, transparent);
+  border: 1px solid var(--tide-line);
+  border-radius: 3px;
+}
+
+.hidden {
+  display: none;
+}
+
+.tab-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 10px;
+}
+
+.tab-body.hidden {
+  display: none;
+}
+
+.chat-input {
+  width: 100%;
+  padding: 8px;
+  background: var(--harbor-night);
+  border: 1px solid var(--tide-line);
+  color: var(--foam);
+  font-family: var(--font-body);
+}
+
+.empty-note {
+  color: var(--mist);
+  font-size: 13px;
+}
+
+/* --- HUD overlays on the map ---------------------------------------- */
+
+.hud-chip {
+  position: absolute;
+  bottom: 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  font-family: var(--font-display);
+  font-size: 11px;
+  color: var(--foam);
+  background: color-mix(in srgb, var(--tide-deep) 78%, transparent);
+  border: 1px solid var(--tide-line);
+  border-radius: 4px;
+  z-index: 5;
+}
+
+#hud {
+  left: 10px;
+}
+
+#spend-chip {
+  right: 10px;
+  cursor: pointer;
+}
+
+#spend-chip.low-power {
+  color: var(--beacon-amber);
+  border-color: var(--beacon-amber);
+}
+
+#spend-chip.hard-stop {
+  color: var(--ember);
+  border-color: var(--ember);
+}
+
+.hud-button {
+  padding: 2px 8px;
+  border: 1px solid var(--tide-line);
+  background: var(--harbor-night);
+  color: var(--foam);
+  font-family: var(--font-display);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+/* --- Popups and focus ------------------------------------------------ */
+
+.popup {
+  position: absolute;
+  background: var(--tide-deep);
+  border: 1px solid var(--tide-line);
+  border-radius: 4px;
+  padding: 12px;
+  z-index: 10;
+}
+
+:focus-visible {
+  outline: 2px solid var(--signal-cyan);
+  outline-offset: 2px;
+}

@@ -27,6 +27,8 @@ from peerport.server.ws import router as ws_router
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
+    from peerport.world.sim import Simulation
+
 STATIC_DIR = Path(__file__).parent / "static"
 
 
@@ -49,12 +51,28 @@ async def _tick_loop(state: WorldState, broadcaster: Broadcaster, tick_ms: int) 
             await broadcaster.publish(diff)
 
 
-def create_app(config: Config | None = None) -> FastAPI:
+async def _tick_loop_simulation(
+    simulation: Simulation, broadcaster: Broadcaster, tick_ms: int
+) -> None:
+    """Drive the full simulation every `tick_ms` and publish its frames."""
+    interval = tick_ms / 1000
+    while True:
+        await asyncio.sleep(interval)
+        for frame in simulation.tick(tick_ms):
+            await broadcaster.publish(frame)
+
+
+def create_app(
+    config: Config | None = None, simulation: Simulation | None = None
+) -> FastAPI:
     """Build the PeerPort FastAPI application.
 
     Args:
         config: Resolved configuration; defaults to `Config()` (all
             documented defaults) when omitted.
+        simulation: The world simulation to drive from the tick loop.
+            When omitted, the app falls back to a bare in-memory
+            `WorldState` (the pre-#13 skeleton behavior kept for tests).
 
     Returns:
         A FastAPI app with `/`, `/static/*`, `/ws`, and `/api/*` wired,
@@ -65,15 +83,22 @@ def create_app(config: Config | None = None) -> FastAPI:
     @contextlib.asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.config = resolved_config
-        app.state.world_state = WorldState()
+        app.state.simulation = simulation
+        app.state.world_state = (
+            simulation.state if simulation is not None else WorldState()
+        )
         app.state.broadcaster = Broadcaster()
-        tick_task = asyncio.create_task(
-            _tick_loop(
+        if simulation is not None:
+            tick_coro = _tick_loop_simulation(
+                simulation, app.state.broadcaster, resolved_config.world.tick_ms
+            )
+        else:
+            tick_coro = _tick_loop(
                 app.state.world_state,
                 app.state.broadcaster,
                 resolved_config.world.tick_ms,
             )
-        )
+        tick_task = asyncio.create_task(tick_coro)
         try:
             yield
         finally:

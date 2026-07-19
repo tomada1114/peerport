@@ -4,13 +4,43 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>PeerPort</title>
+    <link rel="stylesheet" href="/static/css/tokens.css" />
+    <link rel="stylesheet" href="/static/css/bridge.css" />
   </head>
   <body>
     <div id="app">
-      <canvas id="world-canvas"></canvas>
+      <div id="map-pane"></div>
       <div id="bridge"></div>
     </div>
     <script src="/static/vendor/pixi.min.js"></script>
-    <script type="module" src="/static/js/net.js"></script>
+    <script type="module">
+      import { connect } from "/static/js/net.js";
+      import { initI18n } from "/static/js/i18n.js";
+      import { initBridge } from "/static/js/bridge.js";
+      import { initWorld } from "/static/js/world.js";
+
+      const boot = async () => {
+        await initI18n();
+        const bridge = initBridge();
+        const world = await initWorld();
+        connect({
+          onSnapshot: (frame) => world.applySnapshot(frame),
+          onDiff: (frame) => world.applyDiff(frame),
+          onEvent: (frame) => {
+            if (frame.t === "clock") {
+              world.applyClockFrame(frame);
+              bridge.applyClockFrame(frame);
+            } else if (frame.t === "speech") {
+              world.showSpeech(frame.peer_id, frame.text);
+            } else if (frame.t === "spend") {
+              bridge.applySpendFrame(frame);
+            }
+          },
+          onDisconnect: () => bridge.setReconnecting(true),
+          onReconnect: () => bridge.setReconnecting(false),
+        });
+      };
+      boot();
+    </script>
   </body>
 </html>

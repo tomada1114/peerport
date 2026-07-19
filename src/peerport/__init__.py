@@ -9,6 +9,8 @@ from .core import add
 from .db import Database, backup_db, open_db, reset_fresh, rotate_backups
 from .peers.personas import Persona, load_personas
 from .server.app import create_app
+from .world.clock import WorldClock
+from .world.sim import Simulation
 from .world.worldmap import WorldMap
 
 try:
@@ -20,6 +22,8 @@ __all__ = [
     "Config",
     "Database",
     "Persona",
+    "Simulation",
+    "WorldClock",
     "WorldMap",
     "__version__",
     "add",

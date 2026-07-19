@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import random
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -19,12 +20,18 @@ from peerport.config import Config, load_config
 from peerport.db import (
     DEFAULT_BACKUP_KEEP,
     backup_db,
+    load_world_seconds,
     open_db,
     reset_fresh,
     rotate_backups,
+    save_world_seconds,
 )
-from peerport.errors import ConfigError
+from peerport.errors import ConfigError, MapDataError, PersonaValidationError
+from peerport.peers.personas import load_personas
 from peerport.server.app import create_app
+from peerport.world.clock import WorldClock
+from peerport.world.sim import Simulation
+from peerport.world.worldmap import WorldMap
 
 if TYPE_CHECKING:
     import sqlite3
@@ -121,17 +128,36 @@ def main(argv: Sequence[str] | None = None) -> int:
     except SystemExit as exc:
         return int(exc.code) if isinstance(exc.code, int) else 1
 
-    # DB persistence of live world state is wired in by #13+; #10 only
-    # establishes the HTTP/WS server over an in-memory world.
-    conn.close()
+    try:
+        personas = load_personas(Path("personas"))
+    except PersonaValidationError:
+        logger.exception("invalid persona file")
+        conn.close()
+        return 1
+    try:
+        worldmap = WorldMap.load(Path("data") / "map" / "port.json")
+    except MapDataError:
+        logger.exception("invalid map data")
+        conn.close()
+        return 1
 
-    app = create_app(config)
+    simulation = Simulation(
+        worldmap=worldmap,
+        personas=personas,
+        rng=random.Random(),  # noqa: S311 -- sim wander randomness, not security
+        clock=WorldClock(day_length_real_minutes=config.world.day_length_real_minutes),
+        initial_world_seconds=load_world_seconds(conn),
+    )
+
+    app = create_app(config, simulation=simulation)
     uvicorn.run(
         app,
         host="127.0.0.1",
         port=config.server.port,
         log_level="debug" if args.debug else "info",
     )
+    save_world_seconds(conn, simulation.state.world_seconds)
+    conn.close()
     return 0
 
 
