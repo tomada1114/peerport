@@ -250,14 +250,14 @@ class TestWorldControlApi:
                 "paused": True,
                 "speed": 1,
             }
-            assert sim.paused
-            client.post("/api/world", json={"action": "speed", "speed": 2})
+            speeded = client.post(
+                "/api/world", json={"action": "speed", "speed": 2}
+            ).json()
+            assert speeded["speed"] == 2
             assert sim.speed == 2
-            client.post("/api/world", json={"action": "resume"})
-            assert not sim.paused
-            assert (
-                client.post("/api/world", json={"action": "warp"}).status_code == 422
-            )
+            resumed = client.post("/api/world", json={"action": "resume"}).json()
+            assert resumed["paused"] is False
+            assert client.post("/api/world", json={"action": "warp"}).status_code == 422
             assert (
                 client.post(
                     "/api/world", json={"action": "speed", "speed": 5}

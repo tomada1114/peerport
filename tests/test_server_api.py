@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 from fastapi.testclient import TestClient
+
 from peerport.server.app import create_app
 
 ROUTES: list[tuple[str, str]] = [

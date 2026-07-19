@@ -5,8 +5,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import pytest
-from peerport.config import load_config
 
+from peerport.config import load_config
 from peerport.errors import ConfigError
 
 if TYPE_CHECKING:

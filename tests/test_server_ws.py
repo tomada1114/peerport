@@ -5,9 +5,9 @@ from __future__ import annotations
 import time
 
 from fastapi.testclient import TestClient
-from peerport.server.app import create_app
 
 from peerport.config import Config, WorldConfig
+from peerport.server.app import create_app
 from peerport.server.state import PeerPosition
 
 FAST_TICK_CONFIG = Config(world=WorldConfig(tick_ms=5))
