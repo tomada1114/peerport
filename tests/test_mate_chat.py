@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import tempfile
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
@@ -10,8 +12,9 @@ from fastapi.testclient import TestClient
 from peerport.config import Config, WorldConfig
 from peerport.db import open_db
 from peerport.llm.budget import BudgetGuard
-from peerport.llm.client import LLMClient, TransportReply
+from peerport.llm.client import LLMClient, ToolCall, TransportReply
 from peerport.mate.chat import KEEPER_BIAS, MateChat
+from peerport.mate.notes import NotesStore
 from peerport.memory.stream import MemoryStream
 from peerport.server.app import create_app
 from tests.test_llm_client import FakeTransport
@@ -20,7 +23,6 @@ from tests.test_memory import FakeEmbedder
 if TYPE_CHECKING:
     import sqlite3
     from collections.abc import Callable, Iterator
-    from pathlib import Path
 
     from peerport.server.state import Broadcaster
 
@@ -94,6 +96,7 @@ def make_chat(
         llm=llm,
         memory=MemoryStream(conn, FakeEmbedder()),
         broadcaster=broadcaster,
+        notes=NotesStore(Path(tempfile.mkdtemp()) / "notes"),
         mate_id="beacon",
         fixed_prefix="PERSONA-PREFIX",
         now_world=lambda: 1234,
@@ -106,6 +109,7 @@ class TestChatEndToEnd:
     ) -> None:
         transport = FakeStreamingTransport(
             replies=[
+                TransportReply(text=""),  # note-tool round: no tool call
                 TransportReply(text="We talked about the town."),
                 TransportReply(text='{"scores": [7]}'),
             ]
@@ -128,6 +132,7 @@ class TestChatEndToEnd:
     def test_summary_written_with_keeper_bias(self, conn: sqlite3.Connection) -> None:
         transport = FakeStreamingTransport(
             replies=[
+                TransportReply(text=""),  # note-tool round: no tool call
                 TransportReply(text="Keeper checked in about the harbor."),
                 TransportReply(text='{"scores": [7]}'),
             ]
@@ -147,6 +152,7 @@ class TestChatEndToEnd:
     def test_keeper_bias_clamps_at_10(self, conn: sqlite3.Connection) -> None:
         transport = FakeStreamingTransport(
             replies=[
+                TransportReply(text=""),  # note-tool round: no tool call
                 TransportReply(text="A heartfelt talk about trust."),
                 TransportReply(text='{"scores": [9]}'),
             ]
@@ -164,6 +170,7 @@ class TestChatEndToEnd:
     ) -> None:
         transport = FakeStreamingTransport(
             replies=[
+                TransportReply(text=""),  # note-tool round: no tool call
                 TransportReply(text="summary"),
                 TransportReply(text='{"scores": [5]}'),
             ]
@@ -174,7 +181,8 @@ class TestChatEndToEnd:
             client.post("/api/chat", json={"text": "hi"})
 
         assert transport.stream_calls[0]["model"] == "gpt-5-mini"
-        assert transport.calls[0]["model"] == "gpt-5-nano"
+        assert transport.calls[0]["model"] == "gpt-5-mini"  # note-tool round
+        assert transport.calls[1]["model"] == "gpt-5-nano"  # summarize
         prompt = transport.stream_calls[0]["prompt"]
         assert isinstance(prompt, str)
         assert prompt.startswith("PERSONA-PREFIX")
@@ -182,6 +190,7 @@ class TestChatEndToEnd:
     def test_chat_always_offers_web_search_tool(self, conn: sqlite3.Connection) -> None:
         transport = FakeStreamingTransport(
             replies=[
+                TransportReply(text=""),  # note-tool round: no tool call
                 TransportReply(text="summary"),
                 TransportReply(text='{"scores": [5]}'),
             ]
@@ -205,3 +214,81 @@ class TestChatEndToEnd:
         app = create_app(Config(world=WorldConfig(tick_ms=60000)))
         with TestClient(app) as client:
             assert client.post("/api/chat", json={"text": "hi"}).status_code == 501
+
+
+class TestNoteToolDispatch:
+    def test_create_tool_call_files_note_and_remembers(
+        self, conn: sqlite3.Connection
+    ) -> None:
+        create_call = ToolCall(
+            id="call_1",
+            name="create",
+            arguments={"title": "Tide Notes", "content_markdown": "Spring tides."},
+        )
+        transport = FakeStreamingTransport(
+            replies=[
+                TransportReply(text="", tool_calls=[create_call]),
+                TransportReply(text="Filed it away for you."),
+                TransportReply(text='{"scores": [5]}'),
+            ]
+        )
+        app = create_app(Config(world=WorldConfig(tick_ms=60000)))
+        with TestClient(app) as client:
+            chat = make_chat(conn, app.state.broadcaster, transport)
+            app.state.mate_chat = chat
+            response = client.post(
+                "/api/chat", json={"text": "file a note about the tides"}
+            )
+
+        assert response.status_code == 200
+        notes = chat.notes.list_notes()
+        assert len(notes) == 1
+        assert notes[0].title == "Tide Notes"
+        memory_kinds = [
+            row[0] for row in conn.execute("SELECT kind FROM memories").fetchall()
+        ]
+        assert "keeper_note" in memory_kinds
+
+    def test_rejected_delete_call_does_not_crash_and_files_nothing(
+        self, conn: sqlite3.Connection
+    ) -> None:
+        delete_call = ToolCall(id="call_1", name="delete", arguments={"note_id": "x"})
+        transport = FakeStreamingTransport(
+            replies=[
+                TransportReply(text="", tool_calls=[delete_call]),
+                TransportReply(text="I can't delete notes myself."),
+                TransportReply(text='{"scores": [3]}'),
+            ]
+        )
+        app = create_app(Config(world=WorldConfig(tick_ms=60000)))
+        with TestClient(app) as client:
+            chat = make_chat(conn, app.state.broadcaster, transport)
+            app.state.mate_chat = chat
+            response = client.post("/api/chat", json={"text": "delete that old note"})
+
+        assert response.status_code == 200
+        assert chat.notes.list_notes() == []
+
+    def test_append_to_missing_note_reports_error_without_crash(
+        self, conn: sqlite3.Connection
+    ) -> None:
+        append_call = ToolCall(
+            id="call_1",
+            name="append",
+            arguments={"note_id": "does-not-exist", "content_markdown": "more"},
+        )
+        transport = FakeStreamingTransport(
+            replies=[
+                TransportReply(text="", tool_calls=[append_call]),
+                TransportReply(text="Couldn't find that note."),
+                TransportReply(text='{"scores": [3]}'),
+            ]
+        )
+        app = create_app(Config(world=WorldConfig(tick_ms=60000)))
+        with TestClient(app) as client:
+            chat = make_chat(conn, app.state.broadcaster, transport)
+            app.state.mate_chat = chat
+            response = client.post("/api/chat", json={"text": "add to that note"})
+
+        assert response.status_code == 200
+        assert chat.notes.list_notes() == []
