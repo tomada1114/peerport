@@ -15,11 +15,13 @@ export const RECONNECT_INITIAL_MS = 500;
 export const RECONNECT_MAX_MS = 16000;
 
 export class PeerPortConnection {
-  constructor({ url, onSnapshot, onDiff, onEvent } = {}) {
+  constructor({ url, onSnapshot, onDiff, onEvent, onDisconnect, onReconnect } = {}) {
     this.url = url ?? defaultWsUrl();
     this.onSnapshot = onSnapshot ?? (() => {});
     this.onDiff = onDiff ?? (() => {});
     this.onEvent = onEvent ?? (() => {});
+    this.onDisconnect = onDisconnect ?? (() => {});
+    this.onReconnect = onReconnect ?? (() => {});
     this.socket = null;
     this.reconnectDelayMs = RECONNECT_INITIAL_MS;
   }
@@ -30,6 +32,7 @@ export class PeerPortConnection {
 
     socket.addEventListener("open", () => {
       this.reconnectDelayMs = RECONNECT_INITIAL_MS;
+      this.onReconnect();
     });
 
     socket.addEventListener("message", (event) => {
@@ -37,6 +40,7 @@ export class PeerPortConnection {
     });
 
     socket.addEventListener("close", () => {
+      this.onDisconnect();
       this._scheduleReconnect();
     });
 
@@ -77,8 +81,4 @@ export function connect(options) {
   const connection = new PeerPortConnection(options);
   connection.connect();
   return connection;
-}
-
-if (typeof window !== "undefined" && window.document) {
-  connect();
 }

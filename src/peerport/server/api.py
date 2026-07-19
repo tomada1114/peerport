@@ -9,8 +9,13 @@ surface; each stub's real behavior is implemented by its owning issue
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
+
+from peerport.config import VALID_LOCALES
 
 router = APIRouter(prefix="/api")
 
@@ -123,3 +128,31 @@ async def get_peer(peer_id: str) -> JSONResponse:
 async def get_onboarding() -> JSONResponse:
     """Onboarding status/state. See #29."""
     return _stub()
+
+
+@router.get("/map")
+async def get_map() -> JSONResponse:
+    """Serve `data/map/port.json` for the PixiJS renderer (#14)."""
+    map_path = Path("data") / "map" / "port.json"
+    if not map_path.exists():
+        return JSONResponse(status_code=404, content={"detail": "map data not found"})
+    return JSONResponse(content=json.loads(map_path.read_text()))
+
+
+@router.get("/locales/{locale}")
+async def get_locale_catalog(locale: str) -> JSONResponse:
+    """Serve a UI copy catalog (`locales/{en,ja}.json`) for the client (#15)."""
+    if locale not in VALID_LOCALES:
+        return JSONResponse(status_code=404, content={"detail": "unknown locale"})
+    catalog_path = Path("locales") / f"{locale}.json"
+    if not catalog_path.exists():
+        return JSONResponse(status_code=404, content={"detail": "catalog not found"})
+    return JSONResponse(content=json.loads(catalog_path.read_text()))
+
+
+@router.get("/config")
+async def get_config(request: Request) -> JSONResponse:
+    """Expose client-relevant configuration (currently the active locale)."""
+    config = getattr(request.app.state, "config", None)
+    locale = config.locale if config is not None else "en"
+    return JSONResponse(content={"locale": locale})
