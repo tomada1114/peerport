@@ -9,10 +9,12 @@ surface; each stub's real behavior is implemented by its owning issue
 
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 router = APIRouter(prefix="/api")
+
+VALID_SPEEDS = (1, 2)
 
 
 def _stub(**extra: object) -> JSONResponse:
@@ -46,9 +48,39 @@ async def post_mail_reply(mail_id: str) -> JSONResponse:
 
 
 @router.post("/world")
-async def post_world() -> JSONResponse:
-    """Pause/resume/speed control. See #13."""
-    return _stub()
+async def post_world(request: Request) -> JSONResponse:
+    """Pause/resume/speed control over the running simulation (#13).
+
+    Body: `{"action": "pause" | "resume" | "speed", "speed": 1 | 2}`
+    (`speed` only for the `speed` action). Responds with the resulting
+    `paused`/`speed` state; pause/resume also broadcast a `state` frame.
+    """
+    simulation = getattr(request.app.state, "simulation", None)
+    if simulation is None:
+        return _stub()
+    body = await request.json()
+    action = body.get("action")
+    if action == "pause":
+        simulation.paused = True
+        await request.app.state.broadcaster.publish({"t": "state", "state": "paused"})
+    elif action == "resume":
+        simulation.paused = False
+        await request.app.state.broadcaster.publish({"t": "state", "state": "resumed"})
+    elif action == "speed":
+        speed = body.get("speed")
+        if speed not in VALID_SPEEDS:
+            return JSONResponse(
+                status_code=422,
+                content={"detail": f"speed must be one of {VALID_SPEEDS}"},
+            )
+        simulation.speed = speed
+    else:
+        return JSONResponse(
+            status_code=422, content={"detail": f"unknown action: {action}"}
+        )
+    return JSONResponse(
+        content={"ok": True, "paused": simulation.paused, "speed": simulation.speed}
+    )
 
 
 @router.get("/notes")

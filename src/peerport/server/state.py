@@ -96,20 +96,26 @@ def tick_state(state: WorldState, tick_ms: int) -> dict[str, Any] | None:
         for peer_id, pos in state.peers.items()
         if state.broadcast_peers.get(peer_id) != pos
     }
+    removed_peers = [
+        peer_id for peer_id in state.broadcast_peers if peer_id not in state.peers
+    ]
     clock_changed = current_seconds != state.broadcast_seconds
 
-    if not changed_peers and not clock_changed:
+    if not changed_peers and not removed_peers and not clock_changed:
         return None
 
     diff: dict[str, Any] = {"t": "diff"}
     if clock_changed:
         diff["clock"] = {"world_seconds": current_seconds}
         state.broadcast_seconds = current_seconds
-    if changed_peers:
-        diff["peers"] = {
+    if changed_peers or removed_peers:
+        peers_diff: dict[str, Any] = {
             peer_id: {"pos_x": pos.pos_x, "pos_y": pos.pos_y}
             for peer_id, pos in changed_peers.items()
         }
+        # A removed peer is broadcast as an explicit null so clients drop it.
+        peers_diff.update(dict.fromkeys(removed_peers))
+        diff["peers"] = peers_diff
         state.broadcast_peers = dict(state.peers)
 
     return diff
