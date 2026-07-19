@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, create_model
 
+from peerport.db import insert_board_post, list_board_posts
 from peerport.errors import BudgetExceededError, LLMCallError
 from peerport.llm.client import PromptParts
 from peerport.llm.prompts import ActionDecision, build_fixed_prefix
@@ -26,6 +27,17 @@ from peerport.llm.prompts import ActionDecision, build_fixed_prefix
 if TYPE_CHECKING:
     import random
     from collections.abc import Awaitable, Callable, Mapping
+    from sqlite3 import Connection
+    from typing import Protocol
+
+    from peerport.memory.stream import MemoryStream
+
+    class Publisher(Protocol):
+        """Anything with an async publish(frame) method."""
+
+        async def publish(self, message: dict[str, object]) -> None:
+            """Fan a frame out to connected clients."""
+            ...
 
     from peerport.llm.client import LLMClient
     from peerport.peers.personas import Persona
@@ -181,3 +193,40 @@ class DecisionEngine:
         elif decision.action == "read_board" and self.on_read_board is not None:
             await self.on_read_board(peer_id)
         # emote is handled locally: it is pure flavor, nothing to route.
+
+
+READ_BOARD_WINDOW = 5
+
+
+def make_board_hooks(
+    conn: Connection,
+    memory: MemoryStream,
+    broadcaster: Publisher,
+    now_world: Callable[[], int],
+) -> tuple[Callable[[str, str], Awaitable[None]], Callable[[str], Awaitable[None]]]:
+    """Build the post_board/read_board callbacks for the decision engine.
+
+    read_board summaries are stored as `kind=observation`: requirements
+    §4.3 fixes the memory kind enum and has no `board` kind (issue #21's
+    `kind=board` diverges from the spec; requirements.md wins).
+    """
+
+    async def post_board(peer_id: str, content: str) -> None:
+        insert_board_post(conn, author_id=peer_id, body=content, ts_world=now_world())
+        await broadcaster.publish(
+            {"t": "event", "kind": "board_post", "author": peer_id}
+        )
+
+    async def read_board(peer_id: str) -> None:
+        posts = list_board_posts(conn, limit=READ_BOARD_WINDOW)
+        if not posts:
+            return
+        listing = "; ".join(f"{p['author_id']}: {p['body']}" for p in posts)
+        await memory.write(
+            peer_id=peer_id,
+            ts_world=now_world(),
+            kind="observation",
+            text=f"I read the Signal Tower board. {listing}",
+        )
+
+    return post_board, read_board

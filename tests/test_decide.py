@@ -6,6 +6,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
+
+from peerport.config import Config
+from peerport.db import open_db
+from peerport.llm.budget import BudgetGuard
+from peerport.llm.client import LLMClient, TransportReply
+from peerport.llm.prompts import ActionDecision
 from peerport.peers.decide import (
     ACTIONS,
     HISTORY_WINDOW,
@@ -14,12 +20,6 @@ from peerport.peers.decide import (
     DecisionEngine,
     action_schema_excluding,
 )
-
-from peerport.config import Config
-from peerport.db import open_db
-from peerport.llm.budget import BudgetGuard
-from peerport.llm.client import LLMClient, TransportReply
-from peerport.llm.prompts import ActionDecision
 from peerport.peers.personas import load_personas
 from peerport.world.clock import WorldClock
 from peerport.world.sim import Simulation

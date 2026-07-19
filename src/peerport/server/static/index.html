@@ -40,6 +40,8 @@
               bridge.applyChatDone(frame);
             } else if (frame.t === "presence") {
               bridge.applyPresence(frame);
+            } else if (frame.t === "event" && frame.kind === "board_post") {
+              window.dispatchEvent(new CustomEvent("peerport:board-updated"));
             }
           },
           onDisconnect: () => bridge.setReconnecting(true),
