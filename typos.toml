@@ -1,2 +1,2 @@
 [files]
-extend-exclude = ["uv.lock"]
+extend-exclude = ["uv.lock", "src/peerport/server/static/vendor/"]
