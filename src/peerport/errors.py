@@ -21,3 +21,11 @@ class PersonaValidationError(PeerPortError):
 
 class MapDataError(PeerPortError):
     """Raised when `data/map/port.json` is missing or malformed."""
+
+
+class BudgetExceededError(PeerPortError):
+    """Raised when the daily hard spending cap refuses further LLM calls."""
+
+
+class LLMCallError(PeerPortError):
+    """Raised when an LLM call fails after exhausting its retry budget."""

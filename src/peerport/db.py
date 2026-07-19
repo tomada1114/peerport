@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
@@ -104,13 +105,22 @@ _MIGRATIONS: tuple[str, ...] = (
         id INTEGER PRIMARY KEY,
         ts_real INTEGER,
         model TEXT,
+        role TEXT,
         purpose TEXT,
         input_tokens INTEGER,
         cached_tokens INTEGER,
         output_tokens INTEGER,
-        est_cost_usd REAL
+        est_cost_usd REAL,
+        status TEXT
     )
     """,
+)
+
+# Columns added after the original #9 schema shipped; applied idempotently
+# so pre-existing worlds pick them up on the next boot (see #9 REQ-009).
+_SCHEMA_UPGRADES = (
+    ("usage_log", "role", "TEXT"),
+    ("usage_log", "status", "TEXT"),
 )
 
 
@@ -131,6 +141,10 @@ def open_db(db_path: Path) -> sqlite3.Connection:
     with conn:
         for statement in _MIGRATIONS:
             conn.execute(statement)
+        for table, column, column_type in _SCHEMA_UPGRADES:
+            existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+            if column not in existing:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {column_type}")
     return conn
 
 
@@ -257,4 +271,45 @@ def save_world_seconds(conn: sqlite3.Connection, world_seconds: int) -> None:
         conn.execute(
             "INSERT OR REPLACE INTO world_state (key, value) VALUES (?, ?)",
             (WORLD_SECONDS_KEY, str(world_seconds)),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class UsageRecord:
+    """One LLM/embedding call's usage row (success or failure)."""
+
+    model: str
+    role: str
+    purpose: str
+    input_tokens: int
+    cached_tokens: int
+    output_tokens: int
+    est_cost_usd: float
+    status: str
+    ts_real: int | None = None
+
+
+def insert_usage(conn: sqlite3.Connection, record: UsageRecord) -> None:
+    """Record one LLM/embedding call in `usage_log`."""
+    timestamp = (
+        record.ts_real
+        if record.ts_real is not None
+        else int(datetime.now(UTC).timestamp())
+    )
+    with conn:
+        conn.execute(
+            "INSERT INTO usage_log (ts_real, model, role, purpose, input_tokens,"
+            " cached_tokens, output_tokens, est_cost_usd, status)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                timestamp,
+                record.model,
+                record.role,
+                record.purpose,
+                record.input_tokens,
+                record.cached_tokens,
+                record.output_tokens,
+                record.est_cost_usd,
+                record.status,
+            ),
         )
