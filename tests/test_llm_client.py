@@ -14,6 +14,7 @@ from peerport.llm.budget import BudgetGuard
 from peerport.llm.client import (
     LLMClient,
     PromptParts,
+    ToolCall,
     TransportRateLimitedError,
     TransportReply,
     TransportUnavailableError,
@@ -57,6 +58,7 @@ class FakeTransport:
         prompt: str,
         schema: dict[str, object] | None,
         max_output_tokens: int,
+        tools: list[dict[str, object]] | None = None,
     ) -> TransportReply:
         self.calls.append(
             {
@@ -64,6 +66,7 @@ class FakeTransport:
                 "prompt": prompt,
                 "schema": schema,
                 "max_output_tokens": max_output_tokens,
+                "tools": tools,
             }
         )
         reply = self.replies.pop(0) if self.replies else TransportReply(text="ok")
@@ -287,6 +290,49 @@ class TestStructuredOutputs:
             role="background", prompt=PromptParts("f", "v"), schema=Verdict
         )
         assert result.parsed == Verdict(mood="bright", score=8)
+
+
+class TestToolCalling:
+    @pytest.mark.anyio
+    async def test_tools_included_in_request(self, conn: sqlite3.Connection) -> None:
+        transport = FakeTransport([TransportReply(text="done")])
+        client = make_client(conn, transport)
+        tools = [{"type": "web_search"}]
+
+        result = await client.call_with_tools(
+            role="mate", prompt=PromptParts("f", "v"), tools=tools
+        )
+
+        assert transport.calls[0]["tools"] == tools
+        assert result.text == "done"
+        assert result.tool_calls == []
+
+    @pytest.mark.anyio
+    async def test_tool_calls_propagate_to_result(
+        self, conn: sqlite3.Connection
+    ) -> None:
+        call = ToolCall(id="call_1", name="create", arguments={"title": "Tides"})
+        transport = FakeTransport([TransportReply(text="", tool_calls=[call])])
+        client = make_client(conn, transport)
+
+        result = await client.call_with_tools(
+            role="mate",
+            prompt=PromptParts("f", "v"),
+            tools=[{"type": "function", "name": "create"}],
+        )
+
+        assert result.tool_calls == [call]
+
+    @pytest.mark.anyio
+    async def test_no_tools_call_omits_tools_key(
+        self, conn: sqlite3.Connection
+    ) -> None:
+        transport = FakeTransport([TransportReply(text="ok")])
+        client = make_client(conn, transport)
+
+        await client.call(role="background", prompt=PromptParts("f", "v"))
+
+        assert transport.calls[0]["tools"] is None
 
 
 class TestPromptDiscipline:

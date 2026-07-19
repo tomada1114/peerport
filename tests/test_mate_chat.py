@@ -56,9 +56,15 @@ class FakeStreamingTransport(FakeTransport):
         prompt: str,
         max_output_tokens: int,
         on_delta: Callable[[str], object],
+        tools: list[dict[str, object]] | None = None,
     ) -> TransportReply:
         self.stream_calls.append(
-            {"model": model, "prompt": prompt, "max_output_tokens": max_output_tokens}
+            {
+                "model": model,
+                "prompt": prompt,
+                "max_output_tokens": max_output_tokens,
+                "tools": tools,
+            }
         )
         for token in self.stream_tokens:
             result = on_delta(token)
@@ -172,6 +178,20 @@ class TestChatEndToEnd:
         prompt = transport.stream_calls[0]["prompt"]
         assert isinstance(prompt, str)
         assert prompt.startswith("PERSONA-PREFIX")
+
+    def test_chat_always_offers_web_search_tool(self, conn: sqlite3.Connection) -> None:
+        transport = FakeStreamingTransport(
+            replies=[
+                TransportReply(text="summary"),
+                TransportReply(text='{"scores": [5]}'),
+            ]
+        )
+        app = create_app(Config(world=WorldConfig(tick_ms=60000)))
+        with TestClient(app) as client:
+            app.state.mate_chat = make_chat(conn, app.state.broadcaster, transport)
+            client.post("/api/chat", json={"text": "look into tide patterns"})
+
+        assert transport.stream_calls[0]["tools"] == [{"type": "web_search"}]
 
     def test_empty_message_rejected(self, conn: sqlite3.Connection) -> None:
         app = create_app(Config(world=WorldConfig(tick_ms=60000)))
