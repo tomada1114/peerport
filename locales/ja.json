@@ -35,6 +35,7 @@
   "logbook.empty": "ログブックは今日から始まる。この港の物語の1ページ目。",
   "logbook.while_away": "留守の間に",
   "logbook.chronicle": "港の年代記",
+  "logbook.digest_opening": "おかえりなさい。留守の間に…",
 
   "notes.empty": "棚はまだ空っぽ。最初のノートは{mate}に頼んでみよう。",
   "notes.filed_by": "{mate}が保管",

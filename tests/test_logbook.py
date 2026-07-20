@@ -16,6 +16,7 @@ from peerport.db import (
 )
 from peerport.llm.budget import BudgetGuard
 from peerport.llm.client import LLMClient, TransportReply
+from peerport.llm.prompts import LogbookEvent
 from peerport.logbook import (
     ABSENCE_THRESHOLD_SECONDS,
     MAX_EVENTS,
@@ -56,6 +57,7 @@ def make_service(
     *,
     now_real: int = 1_700_010_000,
     world_seconds: int = 0,
+    locale: str = "en",
 ) -> LogbookService:
     personas = load_personas(REPO_ROOT / "personas")
     llm = LLMClient(
@@ -70,6 +72,7 @@ def make_service(
         clock=WorldClock(day_length_real_minutes=120),
         now_world=lambda: world_seconds,
         now_real=lambda: now_real,
+        locale=locale,
     )
 
 
@@ -189,6 +192,58 @@ class TestRejectUnknownEntities:
         ).fetchone()
         assert row[0] == 0
 
+    @pytest.mark.anyio
+    async def test_drops_events_referencing_friend_persona(
+        self, conn: sqlite3.Connection
+    ) -> None:
+        """Friends (kind="friend") never appear on the map (requirements §4.6).
+
+        Kai/Mia are known personas but structurally cannot be "in the
+        port" for an absence-report event, even though they are valid
+        `MailService` correspondents elsewhere.
+        """
+        now = 1_700_010_000
+        save_last_shutdown_ts_real(conn, now - ABSENCE_THRESHOLD_SECONDS)
+        transport = FakeTransport(
+            [
+                events_reply(
+                    [
+                        {"peer_ids": ["tug"], "text": "Tug tidied the pier."},
+                        {"peer_ids": ["kai"], "text": "Kai strolled the quay."},
+                    ]
+                )
+            ]
+        )
+        service = make_service(conn, transport, now_real=now)
+
+        events = await service.maybe_generate_absence_report()
+
+        assert len(events) == 1
+        assert events[0].peer_ids == ["tug"]
+        row = conn.execute(
+            "SELECT COUNT(*) FROM memories WHERE peer_id = 'kai'"
+        ).fetchone()
+        assert row[0] == 0
+
+    @pytest.mark.anyio
+    async def test_prompt_known_peers_list_excludes_friend_personas(
+        self, conn: sqlite3.Connection
+    ) -> None:
+        now = 1_700_010_000
+        save_last_shutdown_ts_real(conn, now - ABSENCE_THRESHOLD_SECONDS)
+        transport = FakeTransport(
+            [events_reply([{"peer_ids": ["tug"], "text": "Tug tidied the pier."}])]
+        )
+        service = make_service(conn, transport, now_real=now)
+
+        await service.maybe_generate_absence_report()
+
+        prompt = transport.calls[0]["prompt"]
+        assert isinstance(prompt, str)
+        assert "tug" in prompt
+        assert "kai" not in prompt
+        assert "mia" not in prompt
+
 
 class TestMemoryAndRelationshipWrites:
     @pytest.mark.anyio
@@ -290,7 +345,7 @@ class TestWeeklySummary:
         self, conn: sqlite3.Connection
     ) -> None:
         transport = FakeTransport(
-            [events_reply([{"peer_ids": ["kai"], "text": "Quiet week at the pier."}])]
+            [events_reply([{"peer_ids": ["tug"], "text": "Quiet week at the pier."}])]
         )
         service = make_service(conn, transport, world_seconds=6 * 7200)  # day 7
 
@@ -349,6 +404,53 @@ class TestReadLogbook:
         data = service.read_logbook()
 
         assert data["chronicle"] == [{"day": 2, "entries": ["Tug tidied the pier."]}]
+
+
+class TestLocale:
+    @pytest.mark.anyio
+    async def test_default_locale_prompt_says_en(
+        self, conn: sqlite3.Connection
+    ) -> None:
+        now = 1_700_010_000
+        save_last_shutdown_ts_real(conn, now - ABSENCE_THRESHOLD_SECONDS)
+        transport = FakeTransport(
+            [events_reply([{"peer_ids": ["tug"], "text": "Tug tidied the pier."}])]
+        )
+        service = make_service(conn, transport, now_real=now)
+
+        await service.maybe_generate_absence_report()
+
+        prompt = transport.calls[0]["prompt"]
+        assert isinstance(prompt, str)
+        assert "Locale: en" in prompt
+
+    @pytest.mark.anyio
+    async def test_configured_locale_reaches_the_generation_prompt(
+        self, conn: sqlite3.Connection
+    ) -> None:
+        now = 1_700_010_000
+        save_last_shutdown_ts_real(conn, now - ABSENCE_THRESHOLD_SECONDS)
+        transport = FakeTransport(
+            [events_reply([{"peer_ids": ["tug"], "text": "Tug tidied the pier."}])]
+        )
+        service = make_service(conn, transport, now_real=now, locale="ja")
+
+        await service.maybe_generate_absence_report()
+
+        prompt = transport.calls[0]["prompt"]
+        assert isinstance(prompt, str)
+        assert "Locale: ja" in prompt
+
+    def test_digest_opening_uses_the_ja_locale_catalog(
+        self, conn: sqlite3.Connection
+    ) -> None:
+        service = make_service(conn, FakeTransport([]), locale="ja")
+
+        digest = service.digest_text(
+            [LogbookEvent(peer_ids=["tug"], text="Tug tidied the pier.")]
+        )
+
+        assert digest.startswith("おかえりなさい")
 
 
 class TestDigestText:
@@ -415,7 +517,7 @@ class TestRunBootGeneration:
         self, conn: sqlite3.Connection
     ) -> None:
         transport = FakeTransport(
-            [events_reply([{"peer_ids": ["kai"], "text": "Quiet week at the pier."}])]
+            [events_reply([{"peer_ids": ["tug"], "text": "Quiet week at the pier."}])]
         )
         service = make_service(conn, transport, world_seconds=6 * 7200)  # day 7
         broadcaster = FakeBroadcaster()

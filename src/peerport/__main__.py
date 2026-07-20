@@ -373,6 +373,7 @@ def _wire_logbook(ctx: WireContext) -> None:
         locations=list(ctx.simulation.worldmap.nodes),
         clock=ctx.simulation.clock,
         now_world=lambda: ctx.simulation.state.world_seconds,
+        locale=ctx.config.locale,
     )
 
 

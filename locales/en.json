@@ -35,6 +35,7 @@
   "logbook.empty": "The logbook opens with today. The harbor's story starts here.",
   "logbook.while_away": "While you were away",
   "logbook.chronicle": "Chronicle",
+  "logbook.digest_opening": "Welcome back. While you were away...",
 
   "notes.empty": "The shelf is empty. Ask {mate} to file your first note.",
   "notes.filed_by": "filed by {mate}",
