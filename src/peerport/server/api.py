@@ -181,6 +181,10 @@ async def post_world(request: Request) -> JSONResponse:
         await request.app.state.broadcaster.publish({"t": "state", "state": "paused"})
     elif action == "resume":
         simulation.paused = False
+        # A "resumed" frame always clears the hard-stop banner client-side
+        # (`Bridge._applyHardStop(false)`) regardless of what caused the
+        # pause, so mirror that here too (finding).
+        simulation.hard_stop = False
         await request.app.state.broadcaster.publish({"t": "state", "state": "resumed"})
     elif action == "speed":
         speed = body.get("speed")

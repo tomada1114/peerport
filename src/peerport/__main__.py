@@ -95,7 +95,9 @@ class WireContext:
     on_hard_cap: Callable[[], None]
 
 
-def make_outage_handler(app: FastAPI) -> Callable[[bool, int | None], None]:
+def make_outage_handler(
+    app: FastAPI, simulation: Simulation | None = None
+) -> Callable[[bool, int | None], None]:
     """Build the shared `OutageTracker.on_change` callback (#27).
 
     Broadcasts the diegetic fog state as a `{"t": "state", "state": "fog"}`
@@ -107,12 +109,18 @@ def make_outage_handler(app: FastAPI) -> Callable[[bool, int | None], None]:
     Args:
         app: The FastAPI app whose broadcaster will exist by the time an
             outage actually flips.
+        simulation: When given, the outage is also mirrored onto
+            `simulation.fog_active`/`fog_status` so a reconnecting
+            client's snapshot can resync the fog banner (finding).
 
     Returns:
         A sync callback matching `OutageTracker`'s `on_change` signature.
     """
 
     def on_change(active: bool, status: int | None) -> None:
+        if simulation is not None:
+            simulation.fog_active = active
+            simulation.fog_status = status
         frame: dict[str, object] = {"t": "state", "state": "fog", "active": active}
         if status is not None:
             frame["status"] = status
@@ -144,6 +152,7 @@ def make_hard_cap_handler(app: FastAPI, simulation: Simulation) -> Callable[[], 
         if simulation.paused:
             return
         simulation.paused = True
+        simulation.hard_stop = True
         _fire_and_forget(
             app.state.broadcaster.publish({"t": "state", "state": "hard_stop"})
         )
@@ -238,6 +247,11 @@ def _wire_mate_chat(ctx: WireContext) -> None:
         ctx.config.budget.hard_cap_usd,
         on_hard_cap=ctx.on_hard_cap,
     )
+    # Every `_wire_*` guard reads the same `usage_log` table under the same
+    # caps, so any one of them is representative; the snapshot resync
+    # (finding) reads whichever wired first without needing a canonical
+    # shared instance.
+    ctx.app.state.budget_guard = budget
     llm = LLMClient(
         config=ctx.config,
         conn=ctx.conn,
@@ -267,6 +281,7 @@ def _wire_friends(ctx: WireContext) -> MailService | None:
         ctx.config.budget.hard_cap_usd,
         on_hard_cap=ctx.on_hard_cap,
     )
+    ctx.app.state.budget_guard = budget
     llm = LLMClient(
         config=ctx.config, conn=ctx.conn, budget=budget, transport=OpenAITransport()
     )
@@ -301,6 +316,7 @@ def _wire_peer_society(ctx: WireContext) -> None:
         ctx.config.budget.hard_cap_usd,
         on_hard_cap=ctx.on_hard_cap,
     )
+    ctx.app.state.budget_guard = budget
     llm = LLMClient(
         config=ctx.config, conn=ctx.conn, budget=budget, transport=OpenAITransport()
     )
@@ -367,6 +383,7 @@ def _wire_logbook(ctx: WireContext) -> None:
         ctx.config.budget.hard_cap_usd,
         on_hard_cap=ctx.on_hard_cap,
     )
+    ctx.app.state.budget_guard = budget
     llm = LLMClient(
         config=ctx.config, conn=ctx.conn, budget=budget, transport=OpenAITransport()
     )
@@ -398,6 +415,7 @@ def _wire_reflection(ctx: WireContext) -> None:
         ctx.config.budget.hard_cap_usd,
         on_hard_cap=ctx.on_hard_cap,
     )
+    ctx.app.state.budget_guard = budget
     llm = LLMClient(
         config=ctx.config, conn=ctx.conn, budget=budget, transport=OpenAITransport()
     )
@@ -431,6 +449,7 @@ def _wire_memory_scoring(ctx: WireContext) -> None:
         ctx.config.budget.hard_cap_usd,
         on_hard_cap=ctx.on_hard_cap,
     )
+    ctx.app.state.budget_guard = budget
     llm = LLMClient(
         config=ctx.config, conn=ctx.conn, budget=budget, transport=OpenAITransport()
     )
@@ -490,7 +509,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         conn=conn,
         personas=personas,
         simulation=simulation,
-        outage=OutageTracker(on_change=make_outage_handler(app)),
+        outage=OutageTracker(on_change=make_outage_handler(app, simulation)),
         on_hard_cap=make_hard_cap_handler(app, simulation),
     )
     _wire_mate_chat(ctx)

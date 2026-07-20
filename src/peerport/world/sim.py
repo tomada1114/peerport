@@ -73,6 +73,15 @@ class Simulation:
         self.state.broadcast_seconds = initial_world_seconds
         self.paused = False
         self.speed = 1
+        # Degraded-state flags (#27/finding): mirrored here (rather than
+        # only living transiently inside the fire-and-forget broadcast
+        # callbacks in `__main__.py`) so a reconnecting client's snapshot
+        # can resync the fog/hard-stop banners instead of only ever
+        # learning about them from a live `state` frame it may have
+        # missed while disconnected.
+        self.hard_stop = False
+        self.fog_active = False
+        self.fog_status: int | None = None
         self.peers: dict[str, SimPeer] = {}
         self._drifter_id = next(
             (p.id for p in personas.values() if p.kind == DRIFTER_KIND), None
