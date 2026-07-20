@@ -61,6 +61,7 @@ COLOR_ZONES: dict[str, str] = {
     "#E8F1F2": "neutral",
     "#FFFFFF": "neutral",
     "#3FD2C7": "neon",
+    "#5A7A82": "cool",
 }
 
 TOKEN_RE = re.compile(r"--([\w-]+):\s*(#[0-9A-Fa-f]{6})")
