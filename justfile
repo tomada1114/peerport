@@ -18,10 +18,11 @@ fmt:
     uv run ruff check --fix .
     uv run ruff format .
 
-# Run linters and type checker
+# Run linters, spell check, and type checker
 lint:
     uv run ruff check .
     uv run ruff format --check .
+    uv run typos --config typos.toml
     uv run mypy src scripts tests
 
 # Run tests with coverage

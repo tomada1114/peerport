@@ -2,7 +2,7 @@
 
 ## Overview
 
-This is a Python library built with [uv](https://docs.astral.sh/uv/) and
+This is a Python application built with [uv](https://docs.astral.sh/uv/) and
 [hatchling](https://hatch.pypa.io/). It uses a strict `src/` layout with
 comprehensive type checking and linting.
 
@@ -11,7 +11,7 @@ comprehensive type checking and linting.
 ```bash
 just install   # Install dependencies and git hooks when .git/ is present
 just fmt       # Format code (ruff check --fix + ruff format)
-just lint      # Lint (ruff check) + type check (mypy)
+just lint      # Lint (ruff) + spell check (typos) + type check (mypy)
 just test      # Run tests with coverage
 just smoke     # Build and verify the wheel in a temp virtual environment
 just check     # Run all checks: fmt → lint → test
@@ -48,15 +48,37 @@ tone, and the decision log.
 
 ```
 src/peerport/
-├── __init__.py   # Public API — export everything users need here
-├── py.typed      # PEP 561 marker for typed package
-└── core.py       # Placeholder module — replace and re-export via __init__.py
+├── __main__.py   # boot: config → db → personas → map → sim → app wiring
+├── config.py     # Config (models / budget / world / server sub-configs)
+├── db.py         # ALL SQL lives here; migrations via _SCHEMA_UPGRADES
+├── errors.py     # PeerPortError hierarchy
+├── logbook.py    # absence reports and weekly digests
+├── world/        # clock, tick simulation, map + waypoint graph
+├── llm/          # client.py (gateway, the ONLY network touchpoint),
+│                 #   budget guard, prompt schemas
+├── memory/       # memory stream, recall, reflection + forgetting
+├── mate/         # Keeper-facing Mate chat and Notes tools
+├── peers/        # personas, decision engine, peer conversations
+├── friends/      # off-map friends and letter mail
+└── server/       # FastAPI app, REST api, WS, broadcaster state, static/
 ```
 
-- Keep the public API surface small — export via `__init__.py.__all__`
-- Internal modules can use a leading underscore (`_internal.py`)
+Invariants (violating any of these is a bug):
+
+- All SQL lives in `db.py`; schema changes go through the idempotent
+  `_SCHEMA_UPGRADES` ALTER pattern
+- Every LLM call goes through `LLMClient.call` / `call_stream` with
+  `PromptParts` and a pydantic schema (strict Structured Outputs);
+  usage is recorded and `BudgetGuard` consulted
+- WebSocket wire frames are `{"t": <type>, ...}`, published only via
+  `Broadcaster.publish` (`server/state.py`)
+- Memory kinds are exactly the requirements §4.3 enum:
+  observation / conversation / reflection / logbook / keeper_note
+- The app must boot and run without `OPENAI_API_KEY` (degraded mode);
+  every LLM-dependent service is wired conditionally in `__main__.py`
+- Services that generate user-visible text carry a `locale` field threaded
+  from config; locale catalogs keep en/ja key parity (enforced by tests)
 - Separate concerns: one module per logical unit
-- Update `docs/reference.md` and README examples whenever you change the public API
 
 ## Review Checklist
 
