@@ -89,6 +89,18 @@ class TestIntervals:
     def test_jitter_band_is_plus_minus_20_percent(self) -> None:
         assert (JITTER_MIN, JITTER_MAX) == (0.8, 1.2)
 
+    def test_low_power_doubles_the_activity_interval(
+        self, conn: sqlite3.Connection, make_rng: Callable[[int], random.Random]
+    ) -> None:
+        engine = make_engine(conn, make_rng(1), FakeTransport())
+        # A soft cap of 0.0 means today's ($0.00) spend already meets it,
+        # so the guard is permanently in low-power mode for this test.
+        engine.llm.budget.soft_cap_usd = 0.0
+        base = engine.personas["tug"].activity_interval or 90
+        for _ in range(200):
+            interval = engine.next_interval("tug")
+            assert base * 2 * JITTER_MIN <= interval <= base * 2 * JITTER_MAX
+
 
 class TestSchema:
     def test_full_schema_has_six_actions_and_no_reasoning(self) -> None:

@@ -21,6 +21,7 @@ from pydantic import BaseModel, create_model
 
 from peerport.db import insert_board_post, list_board_posts
 from peerport.errors import BudgetExceededError, LLMCallError
+from peerport.llm.budget import LOW_POWER_ACTIVITY_BOUNDS
 from peerport.llm.client import PromptParts
 from peerport.llm.prompts import ActionDecision, build_fixed_prefix
 
@@ -96,8 +97,17 @@ class DecisionEngine:
     )
 
     def next_interval(self, peer_id: str) -> float:
-        """Seconds until the peer's next scheduled decision (base ± 20%)."""
+        """Seconds until the peer's next scheduled decision (base ± 20%).
+
+        Doubled when the budget guard's soft cap has engaged low-power
+        mode (requirements §4.9), by consulting
+        `BudgetGuard.activity_interval_bounds()` rather than assuming a
+        fixed multiplier.
+        """
         base = self.personas[peer_id].activity_interval or 90
+        low, _high = self.llm.budget.activity_interval_bounds()
+        if low == LOW_POWER_ACTIVITY_BOUNDS[0]:
+            base *= 2
         return base * self.rng.uniform(JITTER_MIN, JITTER_MAX)
 
     def record_action(self, peer_id: str, decision: ActionDecision) -> None:
