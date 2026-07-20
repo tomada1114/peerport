@@ -240,4 +240,10 @@ async def run_cadence_loop(
     while True:
         await asyncio.sleep(CADENCE_CHECK_INTERVAL_SECONDS)
         for friend_id in FRIEND_PAIRS:
-            await service.maybe_generate_cadence_mail(friend_id)
+            try:
+                await service.maybe_generate_cadence_mail(friend_id)
+            except Exception:
+                # One bad friend/state must not silently stop cadence
+                # mail for every friend for the rest of the process's
+                # life.
+                logger.exception("cadence mail failed for %s; continuing", friend_id)

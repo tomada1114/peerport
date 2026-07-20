@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -12,8 +14,10 @@ from peerport.config import Config
 from peerport.db import NewMail, get_mail, insert_mail, list_mails, open_db
 from peerport.friends.mail import (
     DEFAULT_CADENCE_DAYS,
+    FRIEND_PAIRS,
     SESSION_MAIL_CAP,
     MailService,
+    run_cadence_loop,
 )
 from peerport.llm.budget import BudgetGuard
 from peerport.llm.client import LLMClient, TransportReply
@@ -25,7 +29,7 @@ from tests.test_memory import FakeEmbedder
 
 if TYPE_CHECKING:
     import sqlite3
-    from collections.abc import Iterator
+    from collections.abc import Awaitable, Callable, Iterator
 
 REPO_ROOT = Path(__file__).parent.parent
 
@@ -316,3 +320,51 @@ class TestReply:
 
         assert generated is False
         assert get_mail(conn, 999) is None
+
+
+class TestCadenceLoopResilience:
+    """Finding: one bad friend used to kill the cadence loop forever.
+
+    `run_cadence_loop` had no per-iteration exception handling, so an
+    unguarded error for a single friend silently stopped cadence mail
+    for every friend for the rest of the process's life.
+    """
+
+    @pytest.mark.anyio
+    async def test_cadence_loop_survives_one_bad_friend(
+        self,
+        conn: sqlite3.Connection,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        service = make_service(conn, FakeTransport())
+        calls: list[str] = []
+        bad_friend_id = next(iter(FRIEND_PAIRS))
+
+        async def flaky_cadence_mail(self: MailService, friend_id: str) -> bool:
+            del self
+            calls.append(friend_id)
+            if friend_id == bad_friend_id:
+                message = "boom"
+                raise RuntimeError(message)
+            return False
+
+        monkeypatch.setattr(
+            MailService, "maybe_generate_cadence_mail", flaky_cadence_mail
+        )
+        real_sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
+
+        async def fast_sleep(_seconds: float) -> None:
+            await real_sleep(0)
+
+        monkeypatch.setattr(asyncio, "sleep", fast_sleep)
+
+        task = asyncio.ensure_future(run_cadence_loop(service))
+        for _ in range(5):
+            await asyncio.sleep(0)
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+        # Every friend after the bad one in FRIEND_PAIRS was still
+        # reached in the same iteration; the loop kept going.
+        assert set(calls) == set(FRIEND_PAIRS)

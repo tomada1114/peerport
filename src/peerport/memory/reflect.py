@@ -135,8 +135,17 @@ class ReflectionEngine:
         )
 
     async def _reflect(self, peer_id: str) -> list[ReflectionInsight]:
-        """Run one reflection: generate insights, store them, reset state."""
-        persona = self.personas[peer_id]
+        """Run one reflection: generate insights, store them, reset state.
+
+        Mirrors `_summarize_cluster`'s defensive persona lookup: a
+        missing persona (e.g. removed/renamed after `peer_ids` was
+        captured) degrades to a no-op skip rather than a bare KeyError
+        that would otherwise propagate out of the reflection driver.
+        """
+        persona = self.personas.get(peer_id)
+        if persona is None:
+            logger.warning("reflection skipped: no persona registered for %s", peer_id)
+            return []
         pending = self._pending_memories(peer_id)
         prompt = self._reflection_prompt(persona, pending)
         insights = await self._request_insights(prompt)
@@ -302,7 +311,12 @@ async def run_reflection_loop(
     while True:
         await asyncio.sleep(REFLECTION_CHECK_INTERVAL_SECONDS)
         for peer_id in peer_ids:
-            await engine.maybe_reflect(peer_id)
+            try:
+                await engine.maybe_reflect(peer_id)
+            except Exception:
+                # A bad peer_id/state must not silently stop reflection
+                # for every peer for the rest of the process's life.
+                logger.exception("reflection failed for %s; continuing", peer_id)
 
 
 async def run_forgetting_loop(
@@ -314,4 +328,7 @@ async def run_forgetting_loop(
     while True:
         await asyncio.sleep(FORGETTING_CHECK_INTERVAL_SECONDS)
         for peer_id in peer_ids:
-            await engine.forget_once(peer_id)
+            try:
+                await engine.forget_once(peer_id)
+            except Exception:
+                logger.exception("forgetting failed for %s; continuing", peer_id)

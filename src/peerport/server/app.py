@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -32,6 +33,8 @@ if TYPE_CHECKING:
 
     from peerport.world.sim import Simulation
 
+logger = logging.getLogger(__name__)
+
 STATIC_DIR = Path(__file__).parent / "static"
 
 
@@ -49,9 +52,14 @@ async def _tick_loop(state: WorldState, broadcaster: Broadcaster, tick_ms: int) 
     interval = tick_ms / 1000
     while True:
         await asyncio.sleep(interval)
-        diff = tick_state(state, tick_ms)
-        if diff is not None:
-            await broadcaster.publish(diff)
+        try:
+            diff = tick_state(state, tick_ms)
+            if diff is not None:
+                await broadcaster.publish(diff)
+        except Exception:
+            # One bad tick must not silently freeze the world clock
+            # forever with the WS connection still looking healthy.
+            logger.exception("tick loop iteration failed; continuing")
 
 
 async def _tick_loop_simulation(
@@ -61,8 +69,11 @@ async def _tick_loop_simulation(
     interval = tick_ms / 1000
     while True:
         await asyncio.sleep(interval)
-        for frame in simulation.tick(tick_ms):
-            await broadcaster.publish(frame)
+        try:
+            for frame in simulation.tick(tick_ms):
+                await broadcaster.publish(frame)
+        except Exception:
+            logger.exception("simulation tick loop iteration failed; continuing")
 
 
 def create_app(
