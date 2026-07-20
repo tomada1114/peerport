@@ -53,8 +53,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-FRIEND_PAIRS: dict[str, str] = {"kai": "tug", "mia": "bell"}
-PEER_TO_FRIEND: dict[str, str] = {peer: friend for friend, peer in FRIEND_PAIRS.items()}
 SESSION_MAIL_CAP = 3
 DEFAULT_CADENCE_DAYS = 3
 HEARSAY_PREFIX = "my Keeper said"
@@ -91,6 +89,26 @@ class MailService:
     broadcaster: Publisher | None = None
     cadence_days: int = DEFAULT_CADENCE_DAYS
     session_mails_sent: int = 0
+    locale: str = "en"
+    friend_pairs: dict[str, str] = field(init=False, default_factory=dict)
+    peer_to_friend: dict[str, str] = field(init=False, default_factory=dict)
+
+    def __post_init__(self) -> None:
+        """Derive friend<->peer pairing from the persona registry's `pair` field.
+
+        Persona files are officially user-editable (personas.py's module
+        docstring, requirements §3.2); pairing must follow whatever
+        `pair:` each friend persona file currently declares, not a
+        hardcoded mapping that ignores edits to it (finding).
+        """
+        self.friend_pairs = {
+            persona.id: persona.pair
+            for persona in self.personas.values()
+            if persona.kind == "friend" and persona.pair is not None
+        }
+        self.peer_to_friend = {
+            peer_id: friend_id for friend_id, peer_id in self.friend_pairs.items()
+        }
 
     def friend_state(self, friend_id: str) -> FriendState:
         """The friend's current state, or the neutral default if unset."""
@@ -106,7 +124,7 @@ class MailService:
             `None` when *peer_id* has no paired friend, or that friend
             has never written a letter yet.
         """
-        friend_id = PEER_TO_FRIEND.get(peer_id)
+        friend_id = self.peer_to_friend.get(peer_id)
         if friend_id is None:
             return None
         state = self.friend_state(friend_id)
@@ -125,7 +143,7 @@ class MailService:
         Returns:
             Whether a letter was generated.
         """
-        friend_id = PEER_TO_FRIEND.get(peer_id)
+        friend_id = self.peer_to_friend.get(peer_id)
         if friend_id is None:
             return False
         return await self._maybe_generate(friend_id, trigger_context)
@@ -150,7 +168,7 @@ class MailService:
         original = get_mail(self.conn, mail_id)
         if original is None:
             return False
-        insert_mail(
+        reply_id = insert_mail(
             self.conn,
             NewMail(
                 friend_id=original.friend_id,
@@ -162,16 +180,34 @@ class MailService:
             ),
         )
         return await self._maybe_generate(
-            original.friend_id, f"The Keeper replied to your letter: {text}"
+            original.friend_id,
+            f"The Keeper replied to your letter: {text}",
+            parent_id=reply_id,
         )
 
-    async def _maybe_generate(self, friend_id: str, trigger_context: str) -> bool:
+    async def _maybe_generate(
+        self, friend_id: str, trigger_context: str, *, parent_id: int | None = None
+    ) -> bool:
+        """Generate one letter from *friend_id*, if eligible.
+
+        Args:
+            friend_id: The friend persona writing the letter.
+            trigger_context: What prompted this letter (an event, a
+                cadence check-in, or the Keeper's reply text).
+            parent_id: The Keeper reply mail id this letter answers, so
+                the thread can be reconstructed past one exchange
+                (`reply()` passes the id of the reply it just inserted;
+                every other trigger leaves this letter root-level).
+
+        Returns:
+            Whether a letter was generated.
+        """
         if self.session_mails_sent >= SESSION_MAIL_CAP:
             return False
         state = self.friend_state(friend_id)
         persona = self.personas.get(friend_id)
         fixed = (
-            build_fixed_prefix(persona.body, "en")
+            build_fixed_prefix(persona.body, self.locale)
             if persona is not None
             else WORLD_RULES
         )
@@ -197,6 +233,7 @@ class MailService:
                 direction="in",
                 subject=letter.subject,
                 body=letter.body,
+                parent_id=parent_id,
                 ts_world=self.now_world(),
             ),
         )
@@ -239,7 +276,7 @@ async def run_cadence_loop(
 
     while True:
         await asyncio.sleep(CADENCE_CHECK_INTERVAL_SECONDS)
-        for friend_id in FRIEND_PAIRS:
+        for friend_id in service.friend_pairs:
             try:
                 await service.maybe_generate_cadence_mail(friend_id)
             except Exception:

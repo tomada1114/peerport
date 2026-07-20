@@ -279,6 +279,7 @@ def _wire_friends(ctx: WireContext) -> MailService | None:
         clock=ctx.simulation.clock,
         now_world=lambda: ctx.simulation.state.world_seconds,
         cadence_days=ctx.config.mail.cadence_days,
+        locale=ctx.config.locale,
     )
     ctx.app.state.mail_service = service
     return service
