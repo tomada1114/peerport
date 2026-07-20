@@ -103,7 +103,11 @@ class MemoryStream:
         try:
             embedding = pack_embedding(await self.embedder.embed(text))
         except Exception:
-            logger.warning("embedding failed; storing memory without vector")
+            # Broad by design (degrade-to-no-embedding is a sanctioned
+            # boundary, see module docstring) -- but logger.exception
+            # keeps the traceback so a real bug isn't indistinguishable
+            # from a transient embedding-API outage in the logs.
+            logger.exception("embedding failed; storing memory without vector")
         with self.conn:
             cursor = self.conn.execute(
                 "INSERT INTO memories (peer_id, ts_world, ts_real, kind, text,"

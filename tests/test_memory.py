@@ -138,6 +138,28 @@ class TestWrites:
         embedding = conn.execute("SELECT embedding FROM memories").fetchone()[0]
         assert embedding is None
 
+    @pytest.mark.anyio
+    async def test_embed_failure_logs_a_traceback(
+        self, conn: sqlite3.Connection, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Finding: the degrade path used logger.warning (no traceback).
+
+        That's indistinguishable in the logs from a real embedder bug;
+        it must use logger.exception so unexpected failures still
+        surface one.
+        """
+        stream, embedder = make_stream(conn)
+        embedder.fail = True
+
+        with caplog.at_level("WARNING"):
+            await stream.write(
+                peer_id="tug", ts_world=0, kind="observation", text="quiet morning"
+            )
+
+        records = [r for r in caplog.records if "embedding failed" in r.message]
+        assert len(records) == 1
+        assert records[0].exc_info is not None
+
 
 class TestImportanceBatch:
     @pytest.mark.anyio
@@ -281,6 +303,21 @@ class TestRetrieval:
         results = await retrieve(stream, peer_id="bell", query="q", now_world=1200)
         assert len(results) == 10
         assert all(result.relevance_used is False for result in results)
+
+    @pytest.mark.anyio
+    async def test_query_embedding_failure_logs_a_traceback(
+        self, conn: sqlite3.Connection, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Finding: same logger.warning-without-traceback issue as write()."""
+        stream, embedder = make_stream(conn)
+        embedder.fail = True
+
+        with caplog.at_level("WARNING"):
+            await retrieve(stream, peer_id="bell", query="q", now_world=0)
+
+        records = [r for r in caplog.records if "query embedding failed" in r.message]
+        assert len(records) == 1
+        assert records[0].exc_info is not None
 
     def test_cosine_similarity_pure_python(self) -> None:
         assert cosine_similarity([1.0, 0.0], [1.0, 0.0]) == pytest.approx(1.0)
