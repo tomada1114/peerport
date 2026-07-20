@@ -28,6 +28,7 @@ if TYPE_CHECKING:
 
     from peerport.config import Config
     from peerport.llm.budget import BudgetGuard
+    from peerport.llm.outage import OutageTracker
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +47,19 @@ PRICING_PER_MTOK: dict[str, tuple[float, float, float]] = {
 
 class TransportUnavailableError(Exception):
     """Transient transport failure (5xx, timeout); retried with backoff."""
+
+    def __init__(self, message: str, status: int | None = None) -> None:
+        """Store the failure message and, when known, its HTTP status.
+
+        Args:
+            message: Human-readable failure detail.
+            status: The failing call's HTTP status code, when the
+                failure came from a real HTTP response; `None` for
+                connection/timeout failures with no status (fed to the
+                outage tracker's `state.fog.detail` line by #27).
+        """
+        super().__init__(message)
+        self.status = status
 
 
 class TransportRateLimitedError(Exception):
@@ -165,6 +179,11 @@ class LLMClient:
         self.budget = budget
         self._transport = transport
         self._sleep = sleep
+        # Unset by default (keeps this constructor at 5 params); boot
+        # wiring assigns a shared `OutageTracker` afterward so every call
+        # site here can report success/failure without a network fake
+        # having to know about it (#27).
+        self.outage: OutageTracker | None = None
 
     def resolve_model(self, role: str) -> str:
         """Map a role identifier to the configured model name.
@@ -254,11 +273,16 @@ class LLMClient:
         return LLMResult(text=reply.text, tool_calls=reply.tool_calls)
 
     async def _attempt_with_backoff(self, dispatch: _Dispatch) -> TransportReply | None:
-        """Dispatch with 1s/2s/4s backoff; `None` means rate-limit skip."""
+        """Dispatch with 1s/2s/4s backoff; `None` means rate-limit skip.
+
+        Reports each outcome to `self.outage`, when wired: a rate limit or
+        a final (retries-exhausted) failure counts as one failed dispatch;
+        any reply that comes back at all counts as a success (#27).
+        """
         last_error: Exception | None = None
         for attempt in range(len(BACKOFF_DELAYS) + 1):
             try:
-                return await self._transport.complete(
+                reply = await self._transport.complete(
                     model=dispatch.model,
                     prompt=dispatch.prompt,
                     tools=dispatch.tools,
@@ -274,14 +298,34 @@ class LLMClient:
                 self.record_usage(
                     dispatch, TransportReply(text=""), "skipped_rate_limit"
                 )
+                self.note_outage_failure(status=429)
                 return None
             except TransportUnavailableError as error:
                 last_error = error
                 if attempt < len(BACKOFF_DELAYS):
                     await self._sleep(BACKOFF_DELAYS[attempt])
+            else:
+                self.note_outage_success()
+                return reply
         self.record_usage(dispatch, TransportReply(text=""), "failed")
+        self.note_outage_failure(status=getattr(last_error, "status", None))
         message = f"LLM call failed after {len(BACKOFF_DELAYS)} retries: {last_error}"
         raise LLMCallError(message) from last_error
+
+    def note_outage_success(self) -> None:
+        """Report a successful dispatch to the outage tracker, if wired.
+
+        Public (like `record_usage`) so the module-level `call_stream`
+        driver can report outcomes too, without reaching into a private
+        member from outside the class.
+        """
+        if self.outage is not None:
+            self.outage.report_success()
+
+    def note_outage_failure(self, status: int | None) -> None:
+        """Report a failed dispatch to the outage tracker, if wired."""
+        if self.outage is not None:
+            self.outage.report_failure(status)
 
     async def _validate_with_reask(
         self,
@@ -406,7 +450,8 @@ class OpenAITransport:  # pragma: no cover - the real network boundary
         except openai.RateLimitError as error:
             raise TransportRateLimitedError(str(error)) from error
         except (openai.APIError, openai.APITimeoutError) as error:
-            raise TransportUnavailableError(str(error)) from error
+            status = getattr(error, "status_code", None)
+            raise TransportUnavailableError(str(error), status=status) from error
         usage = response.usage
         cached = (
             usage.input_tokens_details.cached_tokens
@@ -483,11 +528,14 @@ async def call_stream(
         )
     except TransportRateLimitedError:
         client.record_usage(dispatch, TransportReply(text=""), "skipped_rate_limit")
+        client.note_outage_failure(status=429)
         return LLMResult(skipped=True, reason="rate_limited")
-    except TransportUnavailableError:
+    except TransportUnavailableError as error:
         client.record_usage(dispatch, TransportReply(text=""), "failed")
+        client.note_outage_failure(status=getattr(error, "status", None))
         return LLMResult(skipped=True, reason="unavailable")
     client.record_usage(dispatch, reply, "ok")
+    client.note_outage_success()
     return LLMResult(text=reply.text)
 
 
@@ -532,7 +580,8 @@ class OpenAIStreamingTransport(OpenAITransport):  # pragma: no cover - network b
         except openai.RateLimitError as error:
             raise TransportRateLimitedError(str(error)) from error
         except (openai.APIError, openai.APITimeoutError) as error:
-            raise TransportUnavailableError(str(error)) from error
+            status = getattr(error, "status_code", None)
+            raise TransportUnavailableError(str(error), status=status) from error
         return TransportReply(
             text="".join(text_parts),
             input_tokens=usage_in,

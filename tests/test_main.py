@@ -2,18 +2,24 @@
 
 from __future__ import annotations
 
+import asyncio
 import shutil
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import cast
 
 import pytest
+from fastapi import FastAPI
 
-from peerport.__main__ import boot, main, parse_args
+from peerport.__main__ import (
+    boot,
+    main,
+    make_hard_cap_handler,
+    make_outage_handler,
+    parse_args,
+)
 from peerport.db import open_db
-
-if TYPE_CHECKING:
-    from fastapi import FastAPI
+from tests.test_converse import FakeBroadcaster
 
 REPO_ROOT = Path(__file__).parent.parent
 
@@ -27,6 +33,25 @@ def world_files(tmp_path: Path) -> None:
         REPO_ROOT / "data" / "map" / "port.json",
         tmp_path / "data" / "map" / "port.json",
     )
+
+
+@pytest.fixture(autouse=True)
+def uvicorn_run_calls(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, object]]:
+    """Mock `uvicorn.run` file-wide.
+
+    `uvicorn.run()` opens a real network listener and blocks forever, so
+    every test that calls `main()` needs it mocked — per the testing
+    rules, boundaries like network I/O are exactly what should be
+    mocked, not the unit under test. Autouse + module-scoped so every
+    class in this file gets it, not just `TestMain`.
+    """
+    calls: list[dict[str, object]] = []
+
+    def _fake_run(app: object, **kwargs: object) -> None:
+        calls.append({"app": app, **kwargs})
+
+    monkeypatch.setattr("peerport.__main__.uvicorn.run", _fake_run)
+    return calls
 
 
 class TestParseArgs:
@@ -130,22 +155,9 @@ class TestBoot:
 class TestMain:
     """Tests covering the full CLI boot sequence.
 
-    `uvicorn.run()` opens a real network listener and blocks forever, so
-    every test here mocks it — per the testing rules, boundaries like
-    network I/O are exactly what should be mocked, not the unit under test.
+    `uvicorn.run()` is mocked file-wide by the `uvicorn_run_calls`
+    autouse fixture above.
     """
-
-    @pytest.fixture(autouse=True)
-    def uvicorn_run_calls(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> list[dict[str, object]]:
-        calls: list[dict[str, object]] = []
-
-        def _fake_run(app: object, **kwargs: object) -> None:
-            calls.append({"app": app, **kwargs})
-
-        monkeypatch.setattr("peerport.__main__.uvicorn.run", _fake_run)
-        return calls
 
     @pytest.mark.usefixtures("world_files")
     def test_returns_zero_on_successful_boot(
@@ -270,3 +282,181 @@ class TestMain:
             conn.close()
         assert row is not None
         assert before <= int(row[0]) <= after
+
+
+class TestDegradedStateWiring:
+    """#27: the shared outage tracker and hard-cap signal.
+
+    Both must reach every LLM-gated engine `main()` wires. Pre-existing
+    bug found while writing this test (unrelated to #27, not fixed -
+    see the report): `_wire_mate_chat` and `_wire_peer_society`
+    construct `MateChat`/`ConversationEngine` with
+    `broadcaster=ctx.app.state.broadcaster` evaluated eagerly, but the
+    app's lifespan (which sets `app.state.broadcaster`) only runs once
+    uvicorn actually starts serving - well after `main()`'s `_wire_*`
+    calls, so `main()` crashes at `_wire_mate_chat` whenever
+    OPENAI_API_KEY is set, before ever reaching `_wire_friends` or
+    `_wire_logbook`. The two broken helpers are stubbed out here (like
+    this file already stubs `uvicorn.run`) so `main()` can still be
+    driven end-to-end to prove the #27 wiring on the two helpers that
+    bug doesn't affect.
+    """
+
+    @pytest.mark.usefixtures("world_files")
+    def test_outage_and_hard_cap_shared_across_engines(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        uvicorn_run_calls: list[dict[str, object]],
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-fake")
+        monkeypatch.setattr("peerport.__main__._wire_mate_chat", lambda _ctx: None)
+        monkeypatch.setattr("peerport.__main__._wire_peer_society", lambda _ctx: None)
+
+        main([])
+
+        app = cast("FastAPI", uvicorn_run_calls[0]["app"])
+        mail_llm = app.state.mail_service.llm
+        logbook_llm = app.state.logbook_service.llm
+
+        assert mail_llm.outage is not None
+        assert mail_llm.outage is logbook_llm.outage
+
+        assert mail_llm.budget.on_hard_cap is not None
+        assert mail_llm.budget.on_hard_cap is logbook_llm.budget.on_hard_cap
+
+    @pytest.mark.usefixtures("world_files")
+    def test_no_outage_or_hard_cap_wired_without_api_key(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        exit_code = main([])
+
+        assert exit_code == 0
+
+
+class TestDegradedStateHandlers:
+    """Direct tests of `make_outage_handler`/`make_hard_cap_handler` (#27)."""
+
+    @pytest.fixture
+    def anyio_backend(self) -> str:
+        return "asyncio"
+
+    @pytest.fixture
+    def app(self) -> FastAPI:
+        bare_app = FastAPI()
+        bare_app.state.broadcaster = FakeBroadcaster()
+        return bare_app
+
+    @pytest.mark.anyio
+    async def test_outage_handler_broadcasts_fog_frame_with_status(
+        self, app: FastAPI
+    ) -> None:
+        on_change = make_outage_handler(app)
+
+        on_change(True, 503)
+        await asyncio.sleep(0)
+
+        broadcaster = cast("FakeBroadcaster", app.state.broadcaster)
+        assert broadcaster.frames == [
+            {"t": "state", "state": "fog", "active": True, "status": 503}
+        ]
+
+    @pytest.mark.anyio
+    async def test_outage_handler_clears_fog_without_status(self, app: FastAPI) -> None:
+        on_change = make_outage_handler(app)
+
+        on_change(False, None)
+        await asyncio.sleep(0)
+
+        broadcaster = cast("FakeBroadcaster", app.state.broadcaster)
+        assert broadcaster.frames == [{"t": "state", "state": "fog", "active": False}]
+
+    @pytest.mark.anyio
+    async def test_hard_cap_handler_pauses_and_broadcasts_once(
+        self, app: FastAPI
+    ) -> None:
+        class FakeSimulation:
+            """Minimal stand-in exposing only what the handler touches."""
+
+            def __init__(self) -> None:
+                self.paused = False
+
+        simulation_double = FakeSimulation()
+        on_hard_cap = make_hard_cap_handler(app, simulation_double)  # type: ignore[arg-type]
+
+        on_hard_cap()
+        await asyncio.sleep(0)
+
+        broadcaster = cast("FakeBroadcaster", app.state.broadcaster)
+        assert simulation_double.paused is True
+        assert broadcaster.frames == [{"t": "state", "state": "hard_stop"}]
+
+    @pytest.mark.anyio
+    async def test_hard_cap_handler_is_idempotent_once_paused(
+        self, app: FastAPI
+    ) -> None:
+        class FakeSimulation:
+            """Minimal stand-in exposing only what the handler touches."""
+
+            def __init__(self) -> None:
+                self.paused = False
+
+        simulation_double = FakeSimulation()
+        on_hard_cap = make_hard_cap_handler(app, simulation_double)  # type: ignore[arg-type]
+
+        on_hard_cap()
+        on_hard_cap()
+        on_hard_cap()
+        await asyncio.sleep(0)
+
+        broadcaster = cast("FakeBroadcaster", app.state.broadcaster)
+        assert len(broadcaster.frames) == 1
+
+
+class TestReflectionWiring:
+    """#26: the reflection/forgetting engine is wired at boot.
+
+    Reuses the same `_wire_mate_chat`/`_wire_peer_society` stubbing as
+    `TestDegradedStateWiring` above (see that class's docstring for the
+    pre-existing, unrelated boot-ordering bug those two helpers hit).
+    """
+
+    @pytest.mark.usefixtures("world_files")
+    def test_reflection_engine_wired_and_shares_outage_and_hard_cap(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        uvicorn_run_calls: list[dict[str, object]],
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-fake")
+        monkeypatch.setattr("peerport.__main__._wire_mate_chat", lambda _ctx: None)
+        monkeypatch.setattr("peerport.__main__._wire_peer_society", lambda _ctx: None)
+
+        main([])
+
+        app = cast("FastAPI", uvicorn_run_calls[0]["app"])
+        reflection_llm = app.state.reflection_engine.llm
+        logbook_llm = app.state.logbook_service.llm
+
+        assert reflection_llm.outage is not None
+        assert reflection_llm.outage is logbook_llm.outage
+        assert reflection_llm.budget.on_hard_cap is not None
+        assert reflection_llm.budget.on_hard_cap is logbook_llm.budget.on_hard_cap
+
+    @pytest.mark.usefixtures("world_files")
+    def test_reflection_engine_not_wired_without_api_key(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        exit_code = main([])
+
+        assert exit_code == 0

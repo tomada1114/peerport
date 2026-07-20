@@ -10,8 +10,10 @@ surface; each stub's real behavior is implemented by its owning issue
 from __future__ import annotations
 
 import json
-from dataclasses import asdict
+import os
+from dataclasses import asdict, replace
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
@@ -19,17 +21,33 @@ from fastapi.responses import JSONResponse
 from peerport.config import VALID_LOCALES
 from peerport.db import (
     Mail,
+    get_world_state,
     insert_board_post,
     list_board_posts,
     list_mails,
     list_relationships,
     mark_mail_read,
+    set_world_state,
 )
+from peerport.peers.personas import MAP_KINDS
 from peerport.world.clock import WorldClock
+
+if TYPE_CHECKING:
+    import sqlite3
 
 router = APIRouter(prefix="/api")
 
 VALID_SPEEDS = (1, 2)
+
+# Onboarding (#29): `world_state` keys persisting the first-run flow's
+# answers, per D-018's fixed order (api_key -> locale -> keeper_name ->
+# mate_name). Step 1 is never persisted -- it is re-derived from
+# `OPENAI_API_KEY` presence on every request instead.
+ONBOARDING_LOCALE_KEY = "onboarding_locale"
+ONBOARDING_KEEPER_NAME_KEY = "onboarding_keeper_name"
+ONBOARDING_MATE_NAME_KEY = "onboarding_mate_name"
+ONBOARDING_DONE_KEY = "onboarding_done"
+SEED_MEMORY_KIND = "observation"
 
 
 def _stub(**extra: object) -> JSONResponse:
@@ -228,10 +246,122 @@ async def get_usage() -> JSONResponse:
     return _stub()
 
 
+def _onboarding_step(conn: sqlite3.Connection) -> str:
+    """Compute the current onboarding step per D-018's fixed order (#29).
+
+    Order: `api_key` -> `locale` -> `keeper_name` -> `mate_name` -> `done`.
+    Step 1 is re-derived from `OPENAI_API_KEY` presence on every call
+    (never persisted); steps 2-4 are driven by what `POST /api/settings`
+    has already written to `world_state`, so the check sequence itself
+    is what keeps a later step from ever preceding an earlier one
+    (REQ-001), independent of what any individual key holds.
+    """
+    if get_world_state(conn, ONBOARDING_DONE_KEY) == "1":
+        return "done"
+    if not os.environ.get("OPENAI_API_KEY"):
+        return "api_key"
+    if get_world_state(conn, ONBOARDING_LOCALE_KEY) is None:
+        return "locale"
+    if get_world_state(conn, ONBOARDING_KEEPER_NAME_KEY) is None:
+        return "keeper_name"
+    return "mate_name"
+
+
+def _rename_mate(app_state: object, new_name: str) -> None:
+    """Rename the map-visible Mate persona in the shared registry (REQ-007).
+
+    A no-op when no persona registry is wired (the bare skeleton app most
+    other route tests use), or when it holds no `mate`-kind persona.
+    """
+    personas = getattr(app_state, "personas", None)
+    if not personas:
+        return
+    mate_id = next((pid for pid, p in personas.items() if p.kind == "mate"), None)
+    if mate_id is not None:
+        personas[mate_id] = replace(personas[mate_id], name=new_name)
+
+
+async def _write_seed_memories_once(
+    app_state: object, conn: sqlite3.Connection, ts_world: int
+) -> None:
+    """Write every map-visible persona's seed memories exactly once (#29).
+
+    Guarded by `ONBOARDING_DONE_KEY` so a retried onboarding completion
+    never duplicates rows (REQ-011's idempotency guard). Reuses the
+    `MemoryStream` already wired onto `mate_chat` at boot (`_wire_mate_chat`
+    in `__main__.py`) rather than constructing a second embedder.
+
+    Args:
+        app_state: The FastAPI app's state, read for `personas`/`mate_chat`.
+        conn: Open database connection.
+        ts_world: World-clock timestamp to stamp the seed rows with.
+    """
+    if get_world_state(conn, ONBOARDING_DONE_KEY) == "1":
+        return
+    personas = getattr(app_state, "personas", None) or {}
+    memory = getattr(getattr(app_state, "mate_chat", None), "memory", None)
+    if memory is not None:
+        for persona in personas.values():
+            if persona.kind not in MAP_KINDS:
+                continue
+            for text in persona.seed_memories:
+                await memory.write(
+                    peer_id=persona.id,
+                    ts_world=ts_world,
+                    kind=SEED_MEMORY_KIND,
+                    text=text,
+                )
+    set_world_state(conn, ONBOARDING_DONE_KEY, "1")
+
+
 @router.post("/settings")
-async def post_settings() -> JSONResponse:
-    """Update runtime settings. See #29."""
-    return _stub()
+async def post_settings(request: Request) -> JSONResponse:
+    """Onboarding + runtime settings: locale, Keeper name, Mate naming (#29).
+
+    Accepts a partial JSON object of any of `locale`, `keeper_name`,
+    `mate_name`; each present key is validated and persisted to
+    `world_state`. Setting `mate_name` concludes onboarding's step 4 (the
+    first conversation): it renames the Mate persona, writes every
+    map-visible persona's seed memories exactly once, and marks
+    onboarding done (REQ-007/REQ-010). It is only accepted once steps 2-3
+    have completed, so a premature or duplicate call can never trigger
+    that completion early or twice (REQ-011's idempotency guard).
+    """
+    conn = getattr(request.app.state, "db_conn", None)
+    if conn is None:
+        return _stub()
+    body = await request.json()
+
+    if "locale" in body:
+        locale = body.get("locale")
+        if locale not in VALID_LOCALES:
+            return JSONResponse(status_code=422, content={"detail": "invalid locale"})
+        set_world_state(conn, ONBOARDING_LOCALE_KEY, locale)
+
+    if "keeper_name" in body:
+        keeper_name = str(body.get("keeper_name") or "").strip()
+        if not keeper_name:
+            return JSONResponse(
+                status_code=422, content={"detail": "empty keeper name"}
+            )
+        set_world_state(conn, ONBOARDING_KEEPER_NAME_KEY, keeper_name)
+
+    if "mate_name" in body:
+        if _onboarding_step(conn) != "mate_name":
+            return JSONResponse(
+                status_code=409,
+                content={"detail": "onboarding is not at the mate_name step"},
+            )
+        mate_name = str(body.get("mate_name") or "").strip()
+        if not mate_name:
+            return JSONResponse(status_code=422, content={"detail": "empty mate name"})
+        _rename_mate(request.app.state, mate_name)
+        set_world_state(conn, ONBOARDING_MATE_NAME_KEY, mate_name)
+        simulation = getattr(request.app.state, "simulation", None)
+        ts_world = simulation.state.world_seconds if simulation is not None else 0
+        await _write_seed_memories_once(request.app.state, conn, ts_world)
+
+    return JSONResponse(content={"step": _onboarding_step(conn)})
 
 
 @router.get("/peer/{peer_id}")
@@ -281,9 +411,12 @@ async def get_peer(request: Request, peer_id: str) -> JSONResponse:
 
 
 @router.get("/onboarding")
-async def get_onboarding() -> JSONResponse:
-    """Onboarding status/state. See #29."""
-    return _stub()
+async def get_onboarding(request: Request) -> JSONResponse:
+    """Onboarding status: the current step of the first-run flow (#29)."""
+    conn = getattr(request.app.state, "db_conn", None)
+    if conn is None:
+        return _stub()
+    return JSONResponse(content={"step": _onboarding_step(conn)})
 
 
 @router.get("/map")

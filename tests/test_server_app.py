@@ -3,12 +3,19 @@
 from __future__ import annotations
 
 import asyncio
+import random
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
 from peerport.config import Config, ServerConfig
 from peerport.llm.prompts import LogbookEvent
+from peerport.peers.personas import load_personas
 from peerport.server.app import create_app
+from peerport.world.sim import Simulation
+from peerport.world.worldmap import WorldMap
+
+REPO_ROOT = Path(__file__).parent.parent
 
 
 class TestIndexPage:
@@ -125,3 +132,34 @@ class TestMailBroadcasterWiring:
         with TestClient(app):
             assert service.broadcaster is app.state.broadcaster
             assert app.state.broadcaster is not None
+
+
+class TestReflectionBoot:
+    """#26: the reflection/forgetting polling loops start alongside the rest.
+
+    `run_reflection_loop`/`run_forgetting_loop` sleep 30s/1800s before
+    ever touching the engine (`# pragma: no cover - async driver` in
+    reflect.py), so - like `test_lifespan_starts_and_stops_cleanly` above
+    - this only proves the tasks are created and cancelled without error,
+    not that a reflection actually runs within the test.
+    """
+
+    def test_reflection_loops_start_and_stop_cleanly(self) -> None:
+        worldmap = WorldMap.load(REPO_ROOT / "data" / "map" / "port.json")
+        personas = load_personas(REPO_ROOT / "personas")
+        simulation = Simulation(
+            worldmap=worldmap,
+            personas=personas,
+            rng=random.Random(0),  # noqa: S311 -- test seed, not security
+        )
+        app = create_app(simulation=simulation)
+        app.state.reflection_engine = object()
+
+        with TestClient(app):
+            pass  # no assertion beyond "no exception raised on teardown"
+
+    def test_no_reflection_tasks_without_a_reflection_engine(self) -> None:
+        app = create_app()
+
+        with TestClient(app):
+            assert getattr(app.state, "reflection_engine", None) is None

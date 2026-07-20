@@ -41,6 +41,7 @@ peerport = "peerport.__main__:main"
 dev = [
     "httpx>=0.28.1",
     "mypy>=2.1.0",
+    "pillow>=12.2.0",
     "pre-commit>=3.7",
     "pytest>=8.0",
     "pytest-cov>=7.1.0",

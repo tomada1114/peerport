@@ -3,7 +3,7 @@
 // Every user-visible string resolves through i18n.t(); tab bodies are
 // empty placeholders for M1 (their content is owned by later issues).
 
-import { t } from "./i18n.js";
+import { t, setLocale } from "./i18n.js";
 
 export const TABS = [
   { id: "mate", labelKey: "tab.mate" },
@@ -17,6 +17,16 @@ export const TABS = [
 const UNREAD_ELIGIBLE = new Set(["mail", "logbook"]);
 const MAX_INPUT_LINES = 4;
 
+// Onboarding (#29): first-run flow, order per D-018 (api_key -> locale ->
+// keeper_name -> mate_name), gated entirely by `GET /api/onboarding` and
+// advanced via `POST /api/settings` -- the server is the single source
+// of truth for which step is reachable (REQ-001).
+const DEFAULT_MATE_NAME = "Beacon";
+const ONBOARDING_LOCALES = [
+  ["en", "English"],
+  ["ja", "日本語"],
+];
+
 export class Bridge {
   constructor(root, mapPane) {
     this.root = root;
@@ -27,15 +37,18 @@ export class Bridge {
     this.paused = false;
     this.speed = 1;
     this.spendToday = "$0.00";
+    this.onboardingStep = null;
   }
 
   init() {
     this._renderRail();
+    this._renderStateBanner();
     this._renderBodies();
     this._renderHud();
     this._bindKeyboard();
     this._bindWorldEvents();
     this.switchTab("mate");
+    this._initOnboarding();
   }
 
   _renderRail() {
@@ -57,6 +70,45 @@ export class Bridge {
     this.reconnectChip.textContent = t("state.reconnecting");
     rail.append(this.reconnectChip);
     this.root.append(rail);
+  }
+
+  // Degraded-state notices (#27): plain flow content above the tab
+  // bodies, visible no matter which tab is active. Never a modal — the
+  // map and the active tab stay reachable through every state.
+  _renderStateBanner() {
+    this.stateBanner = document.createElement("div");
+    this.stateBanner.className = "state-banner";
+
+    this.fogLine = document.createElement("p");
+    this.fogLine.className = "state-line fog-line hidden";
+    this.fogLine.textContent = t("state.fog");
+    this.fogLine.addEventListener("click", () =>
+      this.fogDetail.classList.toggle("hidden"),
+    );
+    this.fogDetail = document.createElement("p");
+    this.fogDetail.className = "state-detail hidden";
+
+    this.lowPowerBanner = document.createElement("p");
+    this.lowPowerBanner.className = "state-line low-power-banner hidden";
+    this.lowPowerBanner.textContent = t("state.low_power");
+
+    this.hardStopBanner = document.createElement("div");
+    this.hardStopBanner.className = "hard-stop-banner hidden";
+    const hardStopText = document.createElement("p");
+    hardStopText.textContent = t("state.hard_stop");
+    const settingsLink = document.createElement("button");
+    settingsLink.className = "hud-button hard-stop-settings-link";
+    settingsLink.textContent = t("tab.settings");
+    settingsLink.addEventListener("click", () => this.switchTab("settings"));
+    this.hardStopBanner.append(hardStopText, settingsLink);
+
+    this.stateBanner.append(
+      this.fogLine,
+      this.fogDetail,
+      this.lowPowerBanner,
+      this.hardStopBanner,
+    );
+    this.root.append(this.stateBanner);
   }
 
   _renderBodies() {
@@ -579,6 +631,174 @@ export class Bridge {
     });
   }
 
+  // --- Onboarding (#29) -----------------------------------------------
+  // Full-screen overlay over the dimmed-not-hidden map/Bridge (REQ-009 --
+  // the map-pane is never touched here, only the overlay's own scrim
+  // dims what's behind it). Steps 1-3 block via a modal card; step 4
+  // switches to a light scrim so the live Mate chat underneath stays
+  // reachable (Mate naming happens inside that conversation, #18).
+
+  async _initOnboarding() {
+    const response = await fetch("/api/onboarding");
+    if (!response.ok) {
+      return;
+    }
+    const data = await response.json();
+    if (data.step === "done") {
+      return;
+    }
+    this._renderOnboardingOverlay();
+    this._renderOnboardingStep(data.step);
+  }
+
+  _renderOnboardingOverlay() {
+    this.onboardingOverlay = document.createElement("div");
+    this.onboardingOverlay.className = "onboarding-overlay";
+    this.onboardingCard = document.createElement("div");
+    this.onboardingCard.className = "onboarding-card";
+    this.onboardingOverlay.append(this.onboardingCard);
+    document.body.append(this.onboardingOverlay);
+  }
+
+  _renderOnboardingStep(step) {
+    this.onboardingStep = step;
+    if (step === "api_key") {
+      this._renderOnboardingApiKeyStep();
+    } else if (step === "locale") {
+      this._renderOnboardingLocaleStep();
+    } else if (step === "keeper_name") {
+      this._renderOnboardingKeeperNameStep();
+    } else if (step === "mate_name") {
+      this._enterOnboardingMateNamingStep();
+    }
+  }
+
+  async _postOnboardingSettings(payload) {
+    const response = await fetch("/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!response.ok) {
+      return null;
+    }
+    return response.json();
+  }
+
+  _advanceOnboarding(step) {
+    if (step === "done") {
+      this._completeOnboarding();
+      return;
+    }
+    this.onboardingCard.replaceChildren();
+    this._renderOnboardingStep(step);
+  }
+
+  _renderOnboardingApiKeyStep() {
+    const title = document.createElement("h2");
+    // Fixed/non-localized by design (REQ-002): locale has not been
+    // chosen yet, so `t()` still resolves through the English fallback
+    // catalog regardless of any locale later picked at step 2.
+    title.textContent = t("onboarding.api_key.title");
+    const code = document.createElement("code");
+    code.className = "onboarding-code";
+    code.textContent = "OPENAI_API_KEY";
+    this.onboardingCard.append(title, code);
+  }
+
+  _renderOnboardingLocaleStep() {
+    const title = document.createElement("h2");
+    title.textContent = t("onboarding.locale.title");
+    const row = document.createElement("div");
+    row.className = "onboarding-locale-row";
+    for (const [loc, label] of ONBOARDING_LOCALES) {
+      const button = document.createElement("button");
+      button.className = "hud-button";
+      button.textContent = label;
+      button.addEventListener("click", () => this._chooseOnboardingLocale(loc));
+      row.append(button);
+    }
+    this.onboardingCard.append(title, row);
+  }
+
+  async _chooseOnboardingLocale(loc) {
+    const result = await this._postOnboardingSettings({ locale: loc });
+    if (!result) {
+      return;
+    }
+    await setLocale(loc);
+    this._advanceOnboarding(result.step);
+  }
+
+  _renderOnboardingKeeperNameStep() {
+    const title = document.createElement("h2");
+    title.textContent = t("onboarding.keeper_name.title");
+    this.onboardingNameInput = document.createElement("input");
+    this.onboardingNameInput.type = "text";
+    this.onboardingNameInput.className = "onboarding-name-input";
+    const button = document.createElement("button");
+    button.className = "hud-button";
+    button.textContent = "→";
+    button.addEventListener("click", () => this._submitOnboardingKeeperName());
+    this.onboardingCard.append(title, this.onboardingNameInput, button);
+  }
+
+  async _submitOnboardingKeeperName() {
+    const keeperName = this.onboardingNameInput.value.trim();
+    if (!keeperName) {
+      this.onboardingNameInput.classList.add("invalid");
+      return;
+    }
+    this.onboardingNameInput.classList.remove("invalid");
+    const result = await this._postOnboardingSettings({ keeper_name: keeperName });
+    if (result) {
+      this._advanceOnboarding(result.step);
+    }
+  }
+
+  _enterOnboardingMateNamingStep() {
+    this.onboardingOverlay.classList.add("onboarding-light");
+    this.onboardingCard.replaceChildren();
+    this.switchTab("mate");
+    this._renderOnboardingMateNameBar();
+  }
+
+  _renderOnboardingMateNameBar() {
+    this.onboardingMateNameBar = document.createElement("div");
+    this.onboardingMateNameBar.className = "onboarding-mate-name-bar";
+    this.onboardingMateNameInput = document.createElement("input");
+    this.onboardingMateNameInput.type = "text";
+    this.onboardingMateNameInput.className = "onboarding-mate-name-input";
+    this.onboardingMateNameInput.value = DEFAULT_MATE_NAME;
+    const button = document.createElement("button");
+    button.className = "hud-button";
+    button.textContent = "→";
+    button.addEventListener("click", () => this._finishOnboardingMateNaming());
+    this.onboardingMateNameBar.append(this.onboardingMateNameInput, button);
+    this.bodies.mate.prepend(this.onboardingMateNameBar);
+  }
+
+  async _finishOnboardingMateNaming() {
+    const mateName = this.onboardingMateNameInput.value.trim() || DEFAULT_MATE_NAME;
+    const result = await this._postOnboardingSettings({ mate_name: mateName });
+    if (result) {
+      this._advanceOnboarding(result.step);
+    }
+  }
+
+  _completeOnboarding() {
+    if (this.onboardingMateNameBar) {
+      this.onboardingMateNameBar.remove();
+    }
+    if (this.onboardingOverlay) {
+      this.onboardingOverlay.remove();
+    }
+    this.onboardingStep = "done";
+    // #14 owns the beam's rendering/rotation; this ticket only triggers
+    // the "one full sweep" world-open completion beat as an event.
+    window.dispatchEvent(new CustomEvent("peerport:onboarding-complete"));
+  }
+
   switchTab(tabId) {
     this.activeTab = tabId;
     for (const button of this.root.querySelectorAll(".tab")) {
@@ -627,11 +847,47 @@ export class Bridge {
 
   applySpendFrame(frame) {
     this.spendToday = frame.amount;
+    if (typeof frame.low_power === "boolean") {
+      this.spendChip.classList.toggle("low-power", frame.low_power);
+      this.lowPowerBanner.classList.toggle("hidden", !frame.low_power);
+    }
     this._refreshHud();
   }
 
   setReconnecting(reconnecting) {
     this.reconnectChip.classList.toggle("hidden", !reconnecting);
+  }
+
+  // Degraded-state wire frames (#27): `{"t": "state", "state": ...}`.
+  // Fog and hard-stop reuse the existing "state" frame type; see
+  // net.js/index.html for the dispatch into this method.
+  applyStateFrame(frame) {
+    if (frame.state === "fog") {
+      this._applyFogState(frame.active, frame.status);
+    } else if (frame.state === "hard_stop") {
+      this._applyHardStop(true);
+    } else if (frame.state === "resumed") {
+      this._applyHardStop(false);
+    }
+  }
+
+  _applyFogState(active, status) {
+    this.fogLine.classList.toggle("hidden", !active);
+    this.fogDetail.classList.add("hidden");
+    if (active) {
+      this.fogDetail.textContent = t("state.fog.detail", {
+        status: String(status ?? ""),
+      });
+    }
+  }
+
+  _applyHardStop(active) {
+    this.hardStopBanner.classList.toggle("hidden", !active);
+    this.spendChip.classList.toggle("hard-stop", active);
+    if (active) {
+      this.paused = true;
+      this._refreshHud();
+    }
   }
 
   async _togglePause() {
