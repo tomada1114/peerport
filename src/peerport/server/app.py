@@ -102,7 +102,6 @@ def create_app(
         app.state.world_state = (
             simulation.state if simulation is not None else WorldState()
         )
-        app.state.broadcaster = Broadcaster()
         if simulation is not None:
             tick_coro = _tick_loop_simulation(
                 simulation, app.state.broadcaster, resolved_config.world.tick_ms
@@ -140,10 +139,6 @@ def create_app(
         mail_service = getattr(app.state, "mail_service", None)
         mail_tasks = []
         if mail_service is not None:
-            # `_wire_friends` runs before the lifespan starts, so the
-            # broadcaster (created a few lines above) is not yet on
-            # app.state at wire time; attach it here instead.
-            mail_service.broadcaster = app.state.broadcaster
             mail_tasks = [asyncio.create_task(run_cadence_loop(mail_service))]
         reflection_engine = getattr(app.state, "reflection_engine", None)
         reflection_tasks = (
@@ -190,6 +185,10 @@ def create_app(
                     await task
 
     app = FastAPI(title="PeerPort", lifespan=lifespan)
+    # Created at construction time (not in the lifespan) because the boot
+    # wiring in `__main__.py` hands it to LLM-gated services before uvicorn
+    # ever runs; `Broadcaster()` needs no running event loop.
+    app.state.broadcaster = Broadcaster()
     app.include_router(ws_router)
     app.include_router(api_router)
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")

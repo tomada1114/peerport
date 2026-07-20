@@ -144,27 +144,18 @@ class TestLogbookBoot:
         assert "Tug tidied the pier." in digest_frame["text"]
 
 
-class FakeMailServiceForBoot:
-    def __init__(self) -> None:
-        self.broadcaster: object | None = None
-
-    async def maybe_generate_cadence_mail(self, friend_id: str) -> bool:
-        del friend_id
-        return False
-
-
 class TestMailBroadcasterWiring:
-    def test_broadcaster_attached_at_lifespan_startup(self) -> None:
-        # app.state.broadcaster does not exist until the lifespan runs, but
-        # _wire_friends (called before uvicorn.run()) constructs the mail
-        # service beforehand; the lifespan must attach it lazily instead
-        # of the service being built with a broadcaster up front.
+    def test_broadcaster_exists_before_lifespan_and_survives_startup(self) -> None:
+        # The `_wire_*` helpers in __main__.py run before uvicorn starts
+        # serving, so `app.state.broadcaster` must exist as soon as
+        # create_app() returns, and the lifespan must keep (not replace)
+        # that instance or every service wired at boot would publish into
+        # a dead broadcaster.
         app = create_app()
-        service = FakeMailServiceForBoot()
-        app.state.mail_service = service
+        boot_broadcaster = app.state.broadcaster
+        assert boot_broadcaster is not None
         with TestClient(app):
-            assert service.broadcaster is app.state.broadcaster
-            assert app.state.broadcaster is not None
+            assert app.state.broadcaster is boot_broadcaster
 
 
 class TestReflectionBoot:
