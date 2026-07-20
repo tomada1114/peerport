@@ -22,6 +22,7 @@ from fastapi.staticfiles import StaticFiles
 from peerport.config import Config
 from peerport.friends.mail import run_cadence_loop
 from peerport.logbook import run_boot_generation
+from peerport.memory.reflect import run_forgetting_loop, run_reflection_loop
 from peerport.server.api import router as api_router
 from peerport.server.state import Broadcaster, WorldState, tick_state
 from peerport.server.ws import router as ws_router
@@ -132,10 +133,29 @@ def create_app(
             # app.state at wire time; attach it here instead.
             mail_service.broadcaster = app.state.broadcaster
             mail_tasks = [asyncio.create_task(run_cadence_loop(mail_service))]
+        reflection_engine = getattr(app.state, "reflection_engine", None)
+        reflection_tasks = (
+            [
+                asyncio.create_task(
+                    run_reflection_loop(reflection_engine, list(simulation.peers))
+                ),
+                asyncio.create_task(
+                    run_forgetting_loop(reflection_engine, list(simulation.peers))
+                ),
+            ]
+            if reflection_engine is not None and simulation is not None
+            else []
+        )
         try:
             yield
         finally:
-            for task in (*scheduler_tasks, *logbook_tasks, *mail_tasks, tick_task):
+            for task in (
+                *scheduler_tasks,
+                *logbook_tasks,
+                *mail_tasks,
+                *reflection_tasks,
+                tick_task,
+            ):
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await task

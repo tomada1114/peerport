@@ -417,3 +417,46 @@ class TestDegradedStateHandlers:
 
         broadcaster = cast("FakeBroadcaster", app.state.broadcaster)
         assert len(broadcaster.frames) == 1
+
+
+class TestReflectionWiring:
+    """#26: the reflection/forgetting engine is wired at boot.
+
+    Reuses the same `_wire_mate_chat`/`_wire_peer_society` stubbing as
+    `TestDegradedStateWiring` above (see that class's docstring for the
+    pre-existing, unrelated boot-ordering bug those two helpers hit).
+    """
+
+    @pytest.mark.usefixtures("world_files")
+    def test_reflection_engine_wired_and_shares_outage_and_hard_cap(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        uvicorn_run_calls: list[dict[str, object]],
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-fake")
+        monkeypatch.setattr("peerport.__main__._wire_mate_chat", lambda _ctx: None)
+        monkeypatch.setattr("peerport.__main__._wire_peer_society", lambda _ctx: None)
+
+        main([])
+
+        app = cast("FastAPI", uvicorn_run_calls[0]["app"])
+        reflection_llm = app.state.reflection_engine.llm
+        logbook_llm = app.state.logbook_service.llm
+
+        assert reflection_llm.outage is not None
+        assert reflection_llm.outage is logbook_llm.outage
+        assert reflection_llm.budget.on_hard_cap is not None
+        assert reflection_llm.budget.on_hard_cap is logbook_llm.budget.on_hard_cap
+
+    @pytest.mark.usefixtures("world_files")
+    def test_reflection_engine_not_wired_without_api_key(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        exit_code = main([])
+
+        assert exit_code == 0

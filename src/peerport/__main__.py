@@ -40,6 +40,7 @@ from peerport.llm.prompts import build_fixed_prefix
 from peerport.logbook import LogbookService
 from peerport.mate.chat import MateChat
 from peerport.mate.notes import NotesStore
+from peerport.memory.reflect import ReflectionEngine
 from peerport.memory.stream import MemoryStream, OpenAIEmbedder
 from peerport.peers.converse import ConversationEngine
 from peerport.peers.decide import DecisionEngine, make_board_hooks
@@ -374,6 +375,36 @@ def _wire_logbook(ctx: WireContext) -> None:
     )
 
 
+def _wire_reflection(ctx: WireContext) -> None:
+    """Attach the reflection/forgetting engine when an API key is available.
+
+    `server/app.py`'s lifespan starts the actual polling loops
+    (`run_reflection_loop`/`run_forgetting_loop`) once it finds
+    `app.state.reflection_engine` set here (#26).
+    """
+    if not os.environ.get("OPENAI_API_KEY"):
+        return
+    budget = BudgetGuard(
+        ctx.conn,
+        ctx.config.budget.soft_cap_usd,
+        ctx.config.budget.hard_cap_usd,
+        on_hard_cap=ctx.on_hard_cap,
+    )
+    llm = LLMClient(
+        config=ctx.config, conn=ctx.conn, budget=budget, transport=OpenAITransport()
+    )
+    llm.outage = ctx.outage
+    ctx.app.state.reflection_engine = ReflectionEngine(
+        llm=llm,
+        conn=ctx.conn,
+        memory=MemoryStream(ctx.conn, OpenAIEmbedder()),
+        personas=ctx.personas,
+        clock=ctx.simulation.clock,
+        now_world=lambda: ctx.simulation.state.world_seconds,
+        locale=ctx.config.locale,
+    )
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """CLI entry point (console script `peerport`).
 
@@ -432,6 +463,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     _wire_friends(ctx)
     _wire_peer_society(ctx)
     _wire_logbook(ctx)
+    _wire_reflection(ctx)
     uvicorn.run(
         app,
         host="127.0.0.1",
