@@ -277,7 +277,7 @@ class TestFriendPairsFromPersonaRegistry:
     (personas.py's module docstring, requirements §3.2).
     """
 
-    def test_pairing_follows_the_persona_registrys_pair_field(
+    def test_pairing_follows_the_persona_registry_pair_field(
         self, conn: sqlite3.Connection
     ) -> None:
         personas = {
