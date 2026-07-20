@@ -21,6 +21,7 @@
   "mate.empty": "The line to your Mate is open. Say hello.",
   "mate.filed_note": "Filed to Notes → \"{title}\"",
   "mate.searching": "Off to the Signal Tower to look into it…",
+  "mate.error": "The signal dropped before the reply came through. Try again in a moment.",
 
   "mail.empty": "No letters yet. News from beyond the harbor takes time.",
   "mail.reply.placeholder": "Write back…",

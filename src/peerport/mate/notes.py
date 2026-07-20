@@ -292,8 +292,20 @@ def dispatch_note_call(
     Raises:
         NoteOperationRejectedError: If *name* is not one of the 5
             operations in `NOTE_OPERATIONS` (in particular, any
-            delete-like call).
+            delete-like call), or if *arguments* is missing a key one
+            of those operations requires (e.g. malformed tool-call JSON
+            that `_extract_tool_calls` already had to default to `{}`).
     """
+    try:
+        return _dispatch_known_call(store, name, arguments)
+    except KeyError as error:
+        message = f"note operation {name!r} missing required argument: {error}"
+        raise NoteOperationRejectedError(message) from error
+
+
+def _dispatch_known_call(
+    store: NotesStore, name: str, arguments: dict[str, object]
+) -> dict[str, object]:
     if name == "create":
         note_id = store.create(
             str(arguments["title"]), str(arguments["content_markdown"])

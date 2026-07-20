@@ -20,11 +20,19 @@ larger protocol change across the whole `llm/client.py` module.
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING
 
-from peerport.errors import NoteNotFoundError, NoteOperationRejectedError
+from peerport.errors import (
+    BudgetExceededError,
+    LLMCallError,
+    NoteNotFoundError,
+    NoteOperationRejectedError,
+)
 from peerport.llm.client import PromptParts, call_stream
 from peerport.mate.notes import NOTE_TOOL_SCHEMAS, dispatch_note_call
 from peerport.mate.research import digest_of, exceeds_threshold, title_from_request
@@ -42,6 +50,10 @@ logger = logging.getLogger(__name__)
 
 KEEPER_BIAS = 2
 NOTE_ACTION_KINDS = ("create", "append")
+FALLBACK_TEXT_KEY = "mate.error"
+DEFAULT_FALLBACK_TEXT = (
+    "The signal dropped before the reply came through. Try again in a moment."
+)
 
 SUMMARY_INSTRUCTIONS = (
     "Summarize the exchange below between you and your Keeper in 1-2 "
@@ -56,6 +68,22 @@ NOTE_TOOL_INSTRUCTIONS = (
 )
 
 
+def _fallback_text(locale: str) -> str:
+    """The graceful `chat_done` fallback line for a failed LLM call.
+
+    Read fresh from the locale catalog (not cached) so a missing/renamed
+    key or catalog file degrades to `DEFAULT_FALLBACK_TEXT` instead of
+    ever raising out of an already-degraded error path.
+    """
+    catalog_path = Path("locales") / f"{locale}.json"
+    try:
+        catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return DEFAULT_FALLBACK_TEXT
+    text = catalog.get(FALLBACK_TEXT_KEY)
+    return text if isinstance(text, str) else DEFAULT_FALLBACK_TEXT
+
+
 @dataclass(slots=True)
 class MateChat:
     """The Mate chat pipeline: retrieve, stream, summarize, remember."""
@@ -67,32 +95,58 @@ class MateChat:
     mate_id: str
     fixed_prefix: str
     now_world: Callable[[], int]
+    locale: str = "en"
+    # Serializes handle() end to end: overlapping /api/chat requests
+    # would otherwise publish interleaved chat_delta/chat_done frames
+    # onto the same broadcaster with no request id for clients to demux.
+    _lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     async def handle(self, text: str) -> None:
         """Process one Keeper message end to end."""
+        async with self._lock:
+            await self._handle_locked(text)
+
+    async def _handle_locked(self, text: str) -> None:
         memories = await retrieve(
             self.memory, peer_id=self.mate_id, query=text, now_world=self.now_world()
         )
         recalled = "\n".join(f"- {m.text}" for m in memories)
-        tool_context = await self._maybe_use_note_tools(text, recalled)
-        variable = (
-            f"Memories that came to mind:\n{recalled}\n\n"
-            f"Your Keeper says: {text}\n"
-            f"{tool_context}"
-            "Reply in character, directly to your Keeper."
-        )
-        # "Mate is searching" flavor signal (REQ-003): fired before the
-        # call since search necessity is the model's own judgment call,
-        # resolved server-side inside this same streaming request; the
-        # frontend shows the flavor line until the first chat_delta.
-        await self.broadcaster.publish({"t": "event", "kind": "search"})
-        result = await call_stream(
-            self.llm,
-            role="mate",
-            prompt=PromptParts(self.fixed_prefix, variable),
-            on_delta=self._send_delta,
-            purpose="chat",
-        )
+        try:
+            tool_context = await self._maybe_use_note_tools(text, recalled)
+            variable = (
+                f"Memories that came to mind:\n{recalled}\n\n"
+                f"Your Keeper says: {text}\n"
+                f"{tool_context}"
+                "Reply in character, directly to your Keeper."
+            )
+            # "Mate is searching" flavor signal (REQ-003): fired before the
+            # call since search necessity is the model's own judgment
+            # call, resolved server-side inside this same streaming
+            # request; the frontend shows the flavor line until the
+            # first chat_delta.
+            await self.broadcaster.publish({"t": "event", "kind": "search"})
+            result = await call_stream(
+                self.llm,
+                role="mate",
+                prompt=PromptParts(self.fixed_prefix, variable),
+                on_delta=self._send_delta,
+                purpose="chat",
+            )
+        except (LLMCallError, BudgetExceededError):
+            # Both the note-tool round and the streamed reply are
+            # documented to raise these; without this the Keeper's
+            # message never gets a chat_done frame and the frontend
+            # hangs on "Mate is searching..." forever (finding: no
+            # exception handling around LLM calls in handle()).
+            logger.exception("Mate chat turn failed")
+            await self.broadcaster.publish(
+                {
+                    "t": "chat_done",
+                    "text": _fallback_text(self.locale),
+                    "filed_note_title": None,
+                }
+            )
+            return
         reply_text = result.text or ""
         chat_text, filed_title = await self._maybe_file_report(text, reply_text)
         await self.broadcaster.publish(
