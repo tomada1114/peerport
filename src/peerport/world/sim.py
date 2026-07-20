@@ -124,12 +124,16 @@ class Simulation:
     def assign_destination(self, peer_id: str, node: str) -> None:
         """Send a peer toward a waypoint node (used by tests and #19).
 
-        A peer with no reachable path stays put and is flagged for
-        re-decision, per requirements.md §4.1's blocked-path edge case.
+        A peer with no reachable path, or already standing on *node*'s
+        tile (a length-1 path), stays put and is flagged for
+        re-decision -- mirroring `_decide()`'s own exclusion of
+        same-tile candidates, so a peer routed to where it already is
+        doesn't get stuck with `needs_decision` frozen `False` forever
+        (per requirements.md §4.1's blocked-path edge case).
         """
         peer = self.peers[peer_id]
         path = self.worldmap.path_to_node(peer.tile, node, peer.kind)
-        if path is None:
+        if path is None or len(path) <= 1:
             peer.needs_decision = True
             return
         peer.destination = node
