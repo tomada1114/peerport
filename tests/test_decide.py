@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -14,6 +15,7 @@ from peerport.llm.client import LLMClient, TransportReply
 from peerport.llm.prompts import ActionDecision
 from peerport.peers.decide import (
     ACTIONS,
+    FALLBACK_ACTION,
     HISTORY_WINDOW,
     JITTER_MAX,
     JITTER_MIN,
@@ -246,3 +248,123 @@ class TestRedecisionTriggers:
         engine = make_engine(conn, make_rng(9), transport)
         await engine.trigger_redecision()
         assert len(transport.calls) == 3
+
+
+class TestConcurrency:
+    """Finding: concurrent decide() calls for the same peer used to race.
+
+    Two overlapping decisions for the same peer (e.g. the peer's own
+    `run_peer` timer firing at the same moment as an event-triggered
+    `trigger_redecision`) doubled LLM spend and could corrupt the
+    anti-repeat history / double-apply an action. A per-peer lock now
+    serializes them.
+    """
+
+    @pytest.mark.anyio
+    async def test_overlapping_decide_calls_for_same_peer_serialize(
+        self, conn: sqlite3.Connection, make_rng: Callable[[int], random.Random]
+    ) -> None:
+        gate = asyncio.Event()
+        order: list[str] = []
+
+        class BlockingTransport(FakeTransport):
+            async def complete(self, **kwargs: object) -> TransportReply:
+                first = not order
+                order.append("start")
+                if first:
+                    await gate.wait()
+                result = await super().complete(**kwargs)  # type: ignore[arg-type]
+                order.append("end")
+                return result
+
+        transport = BlockingTransport(
+            [TransportReply(text=DECIDE_REPLY), TransportReply(text=DECIDE_REPLY)]
+        )
+        engine = make_engine(conn, make_rng(10), transport)
+
+        first_task = asyncio.ensure_future(engine.decide("tug"))
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        # The first call is now parked at gate.wait() inside its LLM
+        # call; a second decide() for the same peer must not start its
+        # own call while the lock is held.
+        second_task = asyncio.ensure_future(engine.decide("tug"))
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert order == ["start"]
+
+        gate.set()
+        await asyncio.gather(first_task, second_task)
+
+        assert order == ["start", "end", "start", "end"]
+        assert len(transport.calls) == 2
+        # Two decisions were recorded (not one lost, not double-applied).
+        assert len(engine.history["tug"]) == 2
+
+
+class TestBusyGating:
+    """Finding: decide()/_route() never consulted ConversationEngine.busy.
+
+    A peer mid-conversation (several sequential awaited LLM calls in
+    `_run_turns`) could still have its own independently-scheduled
+    `run_peer` loop fire a `move` decision and re-target it while the
+    ConversationEngine considered it busy.
+    """
+
+    @pytest.mark.anyio
+    async def test_busy_peer_makes_no_llm_call_and_is_not_routed(
+        self, conn: sqlite3.Connection, make_rng: Callable[[int], random.Random]
+    ) -> None:
+        transport = FakeTransport([TransportReply(text=DECIDE_REPLY)])
+        engine = make_engine(conn, make_rng(11), transport)
+        engine.is_busy = lambda peer_id: peer_id == "tug"
+
+        decision = await engine.decide("tug")
+
+        assert transport.calls == []
+        assert decision == FALLBACK_ACTION
+        assert engine.sim.peers["tug"].destination is None
+
+    @pytest.mark.anyio
+    async def test_busy_peer_with_history_returns_last_decision_unchanged(
+        self, conn: sqlite3.Connection, make_rng: Callable[[int], random.Random]
+    ) -> None:
+        transport = FakeTransport([TransportReply(text=DECIDE_REPLY)])
+        engine = make_engine(conn, make_rng(12), transport)
+        engine.record_action("tug", ActionDecision(action="rest", mood="calm"))
+        engine.is_busy = lambda peer_id: peer_id == "tug"
+
+        decision = await engine.decide("tug")
+
+        assert decision.action == "rest"
+        assert len(engine.history["tug"]) == 1  # not re-appended
+        assert transport.calls == []
+
+    @pytest.mark.anyio
+    async def test_not_busy_peer_decides_normally(
+        self, conn: sqlite3.Connection, make_rng: Callable[[int], random.Random]
+    ) -> None:
+        transport = FakeTransport([TransportReply(text=DECIDE_REPLY)])
+        engine = make_engine(conn, make_rng(13), transport)
+        engine.is_busy = lambda peer_id: peer_id == "bell"
+
+        decision = await engine.decide("tug")
+
+        assert decision.action == "move"
+        assert len(transport.calls) == 1
+
+
+class TestLocale:
+    @pytest.mark.anyio
+    async def test_configured_locale_reaches_the_prompt(
+        self, conn: sqlite3.Connection, make_rng: Callable[[int], random.Random]
+    ) -> None:
+        transport = FakeTransport([TransportReply(text=DECIDE_REPLY)])
+        engine = make_engine(conn, make_rng(14), transport)
+        engine.locale = "ja"
+
+        await engine.decide("tug")
+
+        prompt = transport.calls[0]["prompt"]
+        assert isinstance(prompt, str)
+        assert "Locale: ja" in prompt

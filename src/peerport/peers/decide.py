@@ -11,6 +11,7 @@ Failures always degrade to `rest` — a peer is never left undecided.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
@@ -92,8 +93,13 @@ class DecisionEngine:
     on_post_board: Callable[[str, str], Awaitable[None]] | None = None
     on_read_board: Callable[[str], Awaitable[None]] | None = None
     hearsay_provider: Callable[[str], str | None] | None = None
+    is_busy: Callable[[str], bool] | None = None
+    locale: str = "en"
     history: dict[str, deque[ActionDecision]] = field(
         default_factory=lambda: defaultdict(lambda: deque(maxlen=32))
+    )
+    _locks: dict[str, asyncio.Lock] = field(
+        default_factory=lambda: defaultdict(asyncio.Lock)
     )
 
     def next_interval(self, peer_id: str) -> float:
@@ -126,7 +132,24 @@ class DecisionEngine:
         return None
 
     async def decide(self, peer_id: str) -> ActionDecision:
-        """Run one decision for a peer; always resolves to some action."""
+        """Run one decision for a peer; always resolves to some action.
+
+        Guarded by a per-peer lock so the peer's own scheduled
+        `run_peer` timer and an event-triggered `trigger_redecision`
+        (spoken to, board post, Keeper instruction) can never overlap
+        into two concurrent LLM calls that corrupt the anti-repeat
+        history or double-apply an action (finding). Also skips, with
+        zero side effects, while `is_busy` reports the peer mid-
+        conversation, so a stray timer tick can't re-target/move a peer
+        `ConversationEngine` currently considers busy.
+        """
+        if self.is_busy is not None and self.is_busy(peer_id):
+            tail = self.history[peer_id]
+            return tail[-1] if tail else FALLBACK_ACTION
+        async with self._locks[peer_id]:
+            return await self._decide_locked(peer_id)
+
+    async def _decide_locked(self, peer_id: str) -> ActionDecision:
         persona = self.personas[peer_id]
         schema = action_schema_excluding(self._excluded_action(peer_id))
         recent = list(self.history[peer_id])[-HISTORY_WINDOW:]
@@ -149,7 +172,9 @@ class DecisionEngine:
         try:
             result = await self.llm.call(
                 role="background",
-                prompt=PromptParts(build_fixed_prefix(persona.body, "en"), variable),
+                prompt=PromptParts(
+                    build_fixed_prefix(persona.body, self.locale), variable
+                ),
                 schema=schema,
                 max_output_tokens=DECISION_MAX_OUTPUT_TOKENS,
                 purpose="decide",
@@ -183,8 +208,6 @@ class DecisionEngine:
 
     async def run_peer(self, peer_id: str) -> None:  # pragma: no cover - async driver
         """Scheduler loop for one peer (thin driver over `decide`)."""
-        import asyncio  # noqa: PLC0415 - driver-only dependency
-
         while True:
             await asyncio.sleep(self.next_interval(peer_id))
             await self.decide(peer_id)

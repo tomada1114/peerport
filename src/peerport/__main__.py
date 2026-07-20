@@ -312,6 +312,7 @@ def _wire_peer_society(ctx: WireContext) -> None:
         personas=ctx.personas,
         rng=ctx.simulation.rng,
         hearsay_provider=mail_service.hearsay_text if mail_service else None,
+        locale=ctx.config.locale,
     )
     conversations = ConversationEngine(
         llm=llm,
@@ -320,7 +321,11 @@ def _wire_peer_society(ctx: WireContext) -> None:
         broadcaster=ctx.app.state.broadcaster,
         conn=ctx.conn,
         personas=ctx.personas,
+        locale=ctx.config.locale,
     )
+    # A peer mid-conversation must not also get a stray timer-driven
+    # decision that re-targets/moves it (finding).
+    engine.is_busy = lambda peer_id: peer_id in conversations.busy
 
     async def on_talk(speaker: str, target: str) -> None:
         started = await conversations.start(speaker, target)

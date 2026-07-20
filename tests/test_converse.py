@@ -251,6 +251,29 @@ class TestConversationFlow:
         assert "45" in prompt
 
 
+class TestLocale:
+    """Finding: conversation turns/outcomes always passed locale "en"."""
+
+    @pytest.mark.anyio
+    async def test_configured_locale_reaches_turn_and_outcome_prompts(
+        self, conn: sqlite3.Connection, make_rng: Callable[[int], random.Random]
+    ) -> None:
+        transport = FakeTransport([turn("a", True), turn("b", True), OUTCOME])
+        engine, _ = make_engine(conn, make_rng(9), transport)
+        engine.locale = "ja"
+        engine.sim.peers["tug"].tile = (10, 12)
+        engine.sim.peers["bell"].tile = (11, 12)
+
+        await engine.start("tug", "bell")
+
+        turn_prompt = transport.calls[0]["prompt"]
+        outcome_prompt = transport.calls[-1]["prompt"]
+        assert isinstance(turn_prompt, str)
+        assert isinstance(outcome_prompt, str)
+        assert "Locale: ja" in turn_prompt
+        assert "Locale: ja" in outcome_prompt
+
+
 class TestPeerPopupApi:
     def test_api_peer_returns_ties_and_lately(
         self, conn: sqlite3.Connection, make_rng: Callable[[int], random.Random]

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import random
 import shutil
 import time
 from pathlib import Path
@@ -12,13 +13,20 @@ import pytest
 from fastapi import FastAPI
 
 from peerport.__main__ import (
+    WireContext,
+    _wire_peer_society,
     boot,
     main,
     make_hard_cap_handler,
     make_outage_handler,
     parse_args,
 )
+from peerport.config import Config
 from peerport.db import open_db
+from peerport.llm.outage import OutageTracker
+from peerport.peers.personas import load_personas
+from peerport.world.sim import Simulation
+from peerport.world.worldmap import WorldMap
 from tests.test_converse import FakeBroadcaster
 
 REPO_ROOT = Path(__file__).parent.parent
@@ -541,3 +549,61 @@ class TestMemoryScoringWiring:
         exit_code = main([])
 
         assert exit_code == 0
+
+
+class TestPeerSocietyWiring:
+    """Finding: decide()/_route() never consulted ConversationEngine.busy.
+
+    `_wire_peer_society` must wire `DecisionEngine.is_busy` against the
+    same `ConversationEngine.busy` set it builds, and thread the
+    configured locale into both engines.
+    """
+
+    def _make_ctx(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, locale: str = "ja"
+    ) -> WireContext:
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-fake")
+        conn = open_db(tmp_path / "peer_society.db")
+        personas = load_personas(REPO_ROOT / "personas")
+        worldmap = WorldMap.load(REPO_ROOT / "data" / "map" / "port.json")
+        simulation = Simulation(
+            worldmap=worldmap,
+            personas=personas,
+            rng=random.Random(0),  # noqa: S311 -- test seed, not security
+        )
+        app = FastAPI()
+        app.state.broadcaster = FakeBroadcaster()
+        return WireContext(
+            app=app,
+            config=Config(locale=locale),
+            conn=conn,
+            personas=personas,
+            simulation=simulation,
+            outage=OutageTracker(),
+            on_hard_cap=lambda: None,
+        )
+
+    def test_locale_threaded_into_both_engines(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        ctx = self._make_ctx(tmp_path, monkeypatch)
+
+        _wire_peer_society(ctx)
+
+        assert ctx.app.state.decision_engine.locale == "ja"
+        assert ctx.app.state.conversation_engine.locale == "ja"
+
+    def test_decision_engine_is_busy_reads_the_conversation_engines_busy_set(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        ctx = self._make_ctx(tmp_path, monkeypatch)
+
+        _wire_peer_society(ctx)
+
+        engine = ctx.app.state.decision_engine
+        conversations = ctx.app.state.conversation_engine
+        assert engine.is_busy is not None
+        assert engine.is_busy("tug") is False
+
+        conversations.busy.add("tug")
+        assert engine.is_busy("tug") is True
