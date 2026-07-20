@@ -20,10 +20,10 @@ repos:
       - id: ruff-format
 
   - repo: https://github.com/crate-ci/typos
-    rev: v1.44.0
+    rev: v1.48.0
     hooks:
       - id: typos
-        args: ["--config", "typos.toml"]
+        args: ["--config", "typos.toml", "--force-exclude"]
 
   - repo: https://github.com/zizmorcore/zizmor-pre-commit
     rev: v1.26.1

@@ -37,8 +37,11 @@ def main() -> int:
         return 0
 
     failed = False
+    # F401 stays reported but never auto-fixed: removing a just-added import
+    # before the edit that uses it lands breaks multi-edit flows (F821 later).
+    # The Stop hook and `just lint` still enforce it at end of turn.
     for args in (
-        ["uv", "run", "ruff", "check", "--fix", str(file_path)],
+        ["uv", "run", "ruff", "check", "--fix", "--unfixable", "F401", str(file_path)],
         ["uv", "run", "ruff", "format", str(file_path)],
     ):
         result = subprocess.run(  # noqa: S603

@@ -12,6 +12,7 @@
       "Bash(uv run pytest:*)",
       "Bash(uv run ruff:*)",
       "Bash(uv run mypy:*)",
+      "Bash(uv run typos:*)",
       "Bash(uv run pre-commit:*)",
       "Bash(uv sync:*)",
       "Bash(uv lock:*)",
