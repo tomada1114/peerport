@@ -50,6 +50,8 @@
   "state.paused": "世界は一時停止中。",
 
   "onboarding.locale.title": "言語を選んでください",
+  "onboarding.locale.en": "English",
+  "onboarding.locale.ja": "日本語",
   "onboarding.keeper_name.title": "この港には灯台守が要る。あなたの名前は？",
   "onboarding.api_key.title": "OpenAI APIキーを設定してください",
 

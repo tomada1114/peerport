@@ -50,6 +50,8 @@
   "state.paused": "The world is paused.",
 
   "onboarding.locale.title": "Choose your language",
+  "onboarding.locale.en": "English",
+  "onboarding.locale.ja": "日本語",
   "onboarding.keeper_name.title": "The port needs a keeper. What's your name?",
   "onboarding.api_key.title": "Set your OpenAI API key",
 
