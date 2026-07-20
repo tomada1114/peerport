@@ -107,3 +107,24 @@ class MailLetter(BaseModel):
     mood: str
     recent_topics: list[str]
     summary: str
+
+
+class ReflectionInsight(BaseModel):
+    """One insight surfaced during a reflection run (requirements §4.3)."""
+
+    text: str
+    importance: int
+
+
+class ReflectionInsights(BaseModel):
+    """The 2-3 insights plus a persona-drift self-check from one reflection."""
+
+    insights: list[ReflectionInsight]
+    drift_notes: str
+
+
+class MemoryClusterSummary(BaseModel):
+    """A low-importance memory cluster folded into one summary (Summarize-and-Forget)."""
+
+    text: str
+    importance: int
