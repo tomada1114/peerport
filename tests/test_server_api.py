@@ -9,6 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from peerport.db import NewMail, insert_mail, open_db
+from peerport.llm.prompts import build_fixed_prefix
 from peerport.mate.notes import NotesStore
 from peerport.memory.stream import MemoryStream
 from peerport.peers.personas import load_personas
@@ -214,10 +215,20 @@ class TestNotesRoutes:
 
 
 class FakeMateChat:
-    """Minimal stand-in exposing only the `.memory` onboarding reads (#29)."""
+    """Minimal stand-in exposing what onboarding/locale propagation read."""
 
-    def __init__(self, memory: MemoryStream) -> None:
+    def __init__(
+        self,
+        memory: MemoryStream,
+        *,
+        mate_id: str = "beacon",
+        fixed_prefix: str = "PERSONA-PREFIX\n\nLocale: en\n",
+        locale: str = "en",
+    ) -> None:
         self.memory = memory
+        self.mate_id = mate_id
+        self.fixed_prefix = fixed_prefix
+        self.locale = locale
 
 
 def _wire_onboarding_app(app: FastAPI, conn: sqlite3.Connection) -> None:
@@ -341,6 +352,95 @@ class TestPostSettingsOnboardingFields:
         assert conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0] == 0
         assert app.state.personas["beacon"].name == "Beacon"
         conn.close()
+
+
+class FakeLocaleService:
+    """Minimal stand-in for a locale-aware engine/service."""
+
+    def __init__(self) -> None:
+        self.locale = "en"
+
+
+class TestPostSettingsLocalePropagation:
+    """D-018: a runtime locale change must reach every already-wired service.
+
+    Before the fix, `MateChat.fixed_prefix` was only ever built once at
+    boot from `config.toml`'s locale; `POST /api/settings`'s locale
+    handler wrote `world_state` but never touched any already-
+    constructed service, so the first Mate conversation (and every peer
+    decision/conversation/mail/logbook/reflection call after it) kept
+    running in whatever locale was active at boot.
+    """
+
+    def test_locale_change_rebuilds_mate_prefix_and_updates_services(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-fake")
+        conn = open_db(tmp_path / "settings_locale.db")
+        personas = dict(load_personas(REPO_ROOT / "personas"))
+        app = create_app()
+        with TestClient(app) as client:
+            app.state.db_conn = conn
+            app.state.personas = personas
+            mate_chat = FakeMateChat(MemoryStream(conn, FakeEmbedder()))
+            app.state.mate_chat = mate_chat
+            decision_engine = FakeLocaleService()
+            conversation_engine = FakeLocaleService()
+            mail_service = FakeLocaleService()
+            logbook_service = FakeLocaleService()
+            reflection_engine = FakeLocaleService()
+            app.state.decision_engine = decision_engine
+            app.state.conversation_engine = conversation_engine
+            app.state.mail_service = mail_service
+            app.state.logbook_service = logbook_service
+            app.state.reflection_engine = reflection_engine
+
+            response = client.post("/api/settings", json={"locale": "ja"})
+        conn.close()
+
+        assert response.status_code == 200
+        assert mate_chat.locale == "ja"
+        assert mate_chat.fixed_prefix == build_fixed_prefix(
+            personas["beacon"].body, "ja"
+        )
+        for service in (
+            decision_engine,
+            conversation_engine,
+            mail_service,
+            logbook_service,
+            reflection_engine,
+        ):
+            assert service.locale == "ja"
+
+    def test_locale_change_without_any_wired_services_is_a_no_op(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No mate_chat/engines wired (e.g. no OPENAI_API_KEY world) -> no crash."""
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-fake")
+        conn = open_db(tmp_path / "settings_locale_bare.db")
+        app = create_app()
+        with TestClient(app) as client:
+            app.state.db_conn = conn
+            response = client.post("/api/settings", json={"locale": "ja"})
+        conn.close()
+
+        assert response.status_code == 200
+
+    def test_invalid_locale_does_not_propagate(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-fake")
+        conn = open_db(tmp_path / "settings_locale_invalid.db")
+        app = create_app()
+        with TestClient(app) as client:
+            app.state.db_conn = conn
+            mate_chat = FakeMateChat(MemoryStream(conn, FakeEmbedder()))
+            app.state.mate_chat = mate_chat
+            response = client.post("/api/settings", json={"locale": "fr"})
+        conn.close()
+
+        assert response.status_code == 422
+        assert mate_chat.locale == "en"
 
 
 class TestOnboardingCompletion:
