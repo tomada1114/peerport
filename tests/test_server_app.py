@@ -198,6 +198,38 @@ class TestReflectionBoot:
             assert getattr(app.state, "reflection_engine", None) is None
 
 
+class TestMemoryScoringBoot:
+    """Finding: nothing ever scheduled periodic importance scoring.
+
+    Mirrors `TestReflectionBoot` above: `run_scoring_loop` sleeps
+    `SCORING_CHECK_INTERVAL_SECONDS` before ever touching its arguments,
+    so this only proves the task is created/cancelled cleanly, not that
+    a scoring pass actually runs within the test.
+    """
+
+    def test_scoring_loop_starts_and_stops_cleanly(self) -> None:
+        worldmap = WorldMap.load(REPO_ROOT / "data" / "map" / "port.json")
+        personas = load_personas(REPO_ROOT / "personas")
+        simulation = Simulation(
+            worldmap=worldmap,
+            personas=personas,
+            rng=random.Random(0),  # noqa: S311 -- test seed, not security
+        )
+        app = create_app(simulation=simulation)
+        app.state.personas = personas
+        app.state.memory_scoring_llm = object()
+        app.state.memory_scoring_memory = object()
+
+        with TestClient(app):
+            pass  # no assertion beyond "no exception raised on teardown"
+
+    def test_no_scoring_tasks_without_being_wired(self) -> None:
+        app = create_app()
+
+        with TestClient(app):
+            assert getattr(app.state, "memory_scoring_llm", None) is None
+
+
 class TestTickLoopResilience:
     """Finding: a single bad tick used to kill the loop forever.
 

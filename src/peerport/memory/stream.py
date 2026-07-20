@@ -20,6 +20,7 @@ from peerport.llm.prompts import WORLD_RULES, ImportanceScores
 
 if TYPE_CHECKING:
     import sqlite3
+    from collections.abc import Sequence
 
     from peerport.llm.client import LLMClient
 
@@ -134,19 +135,51 @@ class MemoryStream:
         )
 
     async def score_pending_importance(
-        self, llm: LLMClient, peer_id: str, bias: int = 0
+        self,
+        llm: LLMClient,
+        peer_id: str,
+        bias: int = 0,
+        only_ids: Sequence[int] | None = None,
     ) -> int:
-        """Score all pending memories for a peer in one batched call.
+        """Score pending (`importance IS NULL`) memories in one batched call.
+
+        Args:
+            llm: LLM client to run the batched scoring call through.
+            peer_id: Peer whose pending memories to score.
+            bias: Added to each raw score before clamping (e.g. the
+                Keeper +2 importance bias, requirements §4.4).
+            only_ids: When given, restrict scoring to exactly these
+                still-pending row ids instead of the peer's whole
+                pending batch -- used to scope a bias (like the Keeper
+                one) to only the row(s) just written for one exchange,
+                so it doesn't bleed onto unrelated pending memories
+                (finding).
 
         Returns:
-            The number of memories scored (0 when none were pending or
-            the call was skipped).
+            The number of memories scored (0 when none matched, or the
+            call was skipped).
         """
-        pending = self.conn.execute(
-            "SELECT id, text FROM memories"
-            " WHERE peer_id = ? AND importance IS NULL ORDER BY id",
-            (peer_id,),
-        ).fetchall()
+        if only_ids is not None:
+            if not only_ids:
+                return 0
+            # Justification for the S608 suppression below: `placeholders`
+            # only ever interpolates a fixed count of literal "?"
+            # characters derived from len(only_ids), never caller-supplied
+            # text -- every actual value still flows through `params` as
+            # a bound parameter.
+            placeholders = ", ".join("?" * len(only_ids))
+            query = (
+                "SELECT id, text FROM memories WHERE peer_id = ? AND importance IS NULL"  # noqa: S608
+                f" AND id IN ({placeholders}) ORDER BY id"
+            )
+            params: tuple[object, ...] = (peer_id, *only_ids)
+        else:
+            query = (
+                "SELECT id, text FROM memories"
+                " WHERE peer_id = ? AND importance IS NULL ORDER BY id"
+            )
+            params = (peer_id,)
+        pending = self.conn.execute(query, params).fetchall()
         if not pending:
             return 0
         listing = "\n".join(f"{i + 1}. {text}" for i, (_, text) in enumerate(pending))
@@ -166,6 +199,38 @@ class MemoryStream:
                     (clamp_importance(raw, bias), memory_id),
                 )
         return min(len(pending), len(scores))
+
+
+SCORING_CHECK_INTERVAL_SECONDS = 60
+
+
+async def run_scoring_loop(
+    llm: LLMClient, memory: MemoryStream, peer_ids: list[str]
+) -> None:  # pragma: no cover - async driver
+    """Periodically score every peer's pending memories, forever.
+
+    Before this driver existed, `score_pending_importance` was only ever
+    invoked from `MateChat._summarize`, scoped to the Mate -- every other
+    peer's `observation`/`conversation`/`logbook` memories (written by
+    `decide.py`, `converse.py`, `logbook.py`, `friends/mail.py`) stayed
+    `importance IS NULL` forever (finding). Follows the same thin polling
+    pattern as `run_reflection_loop`/`run_forgetting_loop`
+    (memory/reflect.py).
+    """
+    import asyncio  # noqa: PLC0415 - driver-only dependency
+
+    while True:
+        await asyncio.sleep(SCORING_CHECK_INTERVAL_SECONDS)
+        for peer_id in peer_ids:
+            try:
+                await memory.score_pending_importance(llm, peer_id)
+            except Exception:
+                # One bad peer/state must not silently stop importance
+                # scoring for every peer for the rest of the process's
+                # life.
+                logger.exception(
+                    "importance scoring failed for %s; continuing", peer_id
+                )
 
 
 EMBEDDING_MODEL = "text-embedding-3-small"

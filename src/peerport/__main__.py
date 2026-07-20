@@ -408,6 +408,32 @@ def _wire_reflection(ctx: WireContext) -> None:
     )
 
 
+def _wire_memory_scoring(ctx: WireContext) -> None:
+    """Attach the periodic importance-scoring loop when an API key exists.
+
+    Every write path but `MateChat._summarize` leaves `importance IS
+    NULL` (memory/stream.py's `MemoryStream.write`); this is the only
+    place anything schedules a `score_pending_importance` pass for the
+    rest of the persona registry. `server/app.py`'s lifespan starts the
+    actual `run_scoring_loop` once it finds `app.state.memory_scoring_llm`
+    set here (finding).
+    """
+    if not os.environ.get("OPENAI_API_KEY"):
+        return
+    budget = BudgetGuard(
+        ctx.conn,
+        ctx.config.budget.soft_cap_usd,
+        ctx.config.budget.hard_cap_usd,
+        on_hard_cap=ctx.on_hard_cap,
+    )
+    llm = LLMClient(
+        config=ctx.config, conn=ctx.conn, budget=budget, transport=OpenAITransport()
+    )
+    llm.outage = ctx.outage
+    ctx.app.state.memory_scoring_llm = llm
+    ctx.app.state.memory_scoring_memory = MemoryStream(ctx.conn, OpenAIEmbedder())
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """CLI entry point (console script `peerport`).
 
@@ -467,6 +493,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     _wire_peer_society(ctx)
     _wire_logbook(ctx)
     _wire_reflection(ctx)
+    _wire_memory_scoring(ctx)
     try:
         uvicorn.run(
             app,

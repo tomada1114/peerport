@@ -24,6 +24,7 @@ from peerport.config import Config
 from peerport.friends.mail import run_cadence_loop
 from peerport.logbook import run_boot_generation
 from peerport.memory.reflect import run_forgetting_loop, run_reflection_loop
+from peerport.memory.stream import run_scoring_loop
 from peerport.server.api import router as api_router
 from peerport.server.state import Broadcaster, WorldState, tick_state
 from peerport.server.ws import router as ws_router
@@ -157,6 +158,22 @@ def create_app(
             if reflection_engine is not None and simulation is not None
             else []
         )
+        scoring_llm = getattr(app.state, "memory_scoring_llm", None)
+        scoring_memory = getattr(app.state, "memory_scoring_memory", None)
+        personas = getattr(app.state, "personas", None)
+        # Every persona kind (including friends, unlike the map-only
+        # reflection/forgetting loops above), since friends/mail.py's
+        # `_maybe_generate` also leaves pending memories that need
+        # scoring (finding).
+        scoring_tasks = (
+            [
+                asyncio.create_task(
+                    run_scoring_loop(scoring_llm, scoring_memory, list(personas))
+                )
+            ]
+            if scoring_llm is not None and scoring_memory is not None and personas
+            else []
+        )
         try:
             yield
         finally:
@@ -165,6 +182,7 @@ def create_app(
                 *logbook_tasks,
                 *mail_tasks,
                 *reflection_tasks,
+                *scoring_tasks,
                 tick_task,
             ):
                 task.cancel()

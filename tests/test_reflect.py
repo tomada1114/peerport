@@ -387,6 +387,38 @@ class TestForgettingCluster:
         assert expected_removed.isdisjoint(remaining_ids)
         assert set(forgettable_ids[FORGET_CLUSTER_SIZE:]).issubset(remaining_ids)
 
+    @pytest.mark.anyio
+    async def test_unscored_null_importance_rows_are_never_folded_away(
+        self, conn: sqlite3.Connection
+    ) -> None:
+        """Finding: SQLite sorts NULL before every non-NULL value ascending.
+
+        Without excluding `importance IS NULL`, still-pending rows (the
+        oldest of all, here) would always be picked over already-scored
+        rows with a genuinely low importance, contradicting "lowest
+        importance" -- an unscored row could be anything once scored.
+        """
+        pending_ids = [
+            seed_memory(conn, SeedMemory(peer_id="mia", ts_world=i, importance=None))
+            for i in range(50)
+        ]
+        for i in range(2000):
+            seed_memory(
+                conn, SeedMemory(peer_id="mia", ts_world=1000 + i, importance=5)
+            )
+        transport = FakeTransport([summary_reply()])
+        engine = make_engine(conn, transport, lambda: 0)
+
+        assert await engine.forget_once("mia") is True
+
+        remaining_ids = {
+            row[0]
+            for row in conn.execute(
+                "SELECT id FROM memories WHERE peer_id = 'mia' AND kind != 'reflection'"
+            ).fetchall()
+        }
+        assert set(pending_ids).issubset(remaining_ids)
+
 
 class TestForgettingWriteThenDelete:
     @pytest.mark.anyio

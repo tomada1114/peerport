@@ -498,3 +498,46 @@ class TestReflectionWiring:
         exit_code = main([])
 
         assert exit_code == 0
+
+
+class TestMemoryScoringWiring:
+    """Finding: nothing ever scheduled periodic importance scoring.
+
+    Reuses the same `_wire_mate_chat`/`_wire_peer_society` stubbing as
+    `TestReflectionWiring` above.
+    """
+
+    @pytest.mark.usefixtures("world_files")
+    def test_memory_scoring_wired_and_shares_outage_and_hard_cap(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        uvicorn_run_calls: list[dict[str, object]],
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-fake")
+        monkeypatch.setattr("peerport.__main__._wire_mate_chat", lambda _ctx: None)
+        monkeypatch.setattr("peerport.__main__._wire_peer_society", lambda _ctx: None)
+
+        main([])
+
+        app = cast("FastAPI", uvicorn_run_calls[0]["app"])
+        scoring_llm = app.state.memory_scoring_llm
+        logbook_llm = app.state.logbook_service.llm
+
+        assert app.state.memory_scoring_memory is not None
+        assert scoring_llm.outage is not None
+        assert scoring_llm.outage is logbook_llm.outage
+        assert scoring_llm.budget.on_hard_cap is not None
+        assert scoring_llm.budget.on_hard_cap is logbook_llm.budget.on_hard_cap
+
+    @pytest.mark.usefixtures("world_files")
+    def test_memory_scoring_not_wired_without_api_key(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        exit_code = main([])
+
+        assert exit_code == 0

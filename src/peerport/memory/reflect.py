@@ -222,9 +222,16 @@ class ReflectionEngine:
         return int(row[0])
 
     def _forget_cluster(self, peer_id: str) -> list[tuple[int, str]]:
-        """The oldest, lowest-importance `FORGET_CLUSTER_SIZE` rows for the peer."""
+        """The oldest, lowest-importance `FORGET_CLUSTER_SIZE` scored rows.
+
+        Excludes `importance IS NULL` (still-pending) rows: SQLite sorts
+        NULL before every non-NULL value in ascending order, so without
+        this filter a still-unscored row would always be folded away
+        first regardless of what it would actually score once scored
+        (finding).
+        """
         return self.conn.execute(
-            "SELECT id, text FROM memories WHERE peer_id = ?"
+            "SELECT id, text FROM memories WHERE peer_id = ? AND importance IS NOT NULL"
             " ORDER BY importance ASC, ts_world ASC LIMIT ?",
             (peer_id, FORGET_CLUSTER_SIZE),
         ).fetchall()

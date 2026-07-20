@@ -177,6 +177,39 @@ class TestChatEndToEnd:
         importance = conn.execute("SELECT importance FROM memories").fetchone()[0]
         assert importance == 10
 
+    def test_keeper_bias_does_not_bleed_onto_unrelated_pending_memory(
+        self, conn: sqlite3.Connection
+    ) -> None:
+        """Finding: the +2 Keeper bias used to score the Mate's whole batch.
+
+        It scored the Mate's *whole* pending batch, not just the row
+        just written for this exchange. The Mate is itself a map peer
+        that can hold ordinary
+        peer-to-peer conversations (converse.py); an unrelated pending
+        memory from one of those must stay untouched by a later Keeper
+        exchange's scoring call.
+        """
+        conn.execute(
+            "INSERT INTO memories (peer_id, ts_world, ts_real, kind, text)"
+            " VALUES ('beacon', 0, 0, 'conversation', 'unrelated peer chat')"
+        )
+        conn.commit()
+        transport = FakeStreamingTransport(
+            replies=[
+                TransportReply(text=""),  # note-tool round: no tool call
+                TransportReply(text="Keeper checked in about the harbor."),
+                TransportReply(text='{"scores": [7]}'),
+            ]
+        )
+        app = create_app(Config(world=WorldConfig(tick_ms=60000)))
+        with TestClient(app) as client:
+            app.state.mate_chat = make_chat(conn, app.state.broadcaster, transport)
+            client.post("/api/chat", json={"text": "hello beacon"})
+
+        rows = dict(conn.execute("SELECT text, importance FROM memories").fetchall())
+        assert rows["Keeper checked in about the harbor."] == 7 + KEEPER_BIAS
+        assert rows["unrelated peer chat"] is None
+
     def test_chat_uses_mate_model_and_summary_uses_background(
         self, conn: sqlite3.Connection
     ) -> None:

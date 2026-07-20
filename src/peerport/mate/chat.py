@@ -222,13 +222,18 @@ class MateChat:
         )
         if not summary.text:
             return
-        await self.memory.write(
+        memory_id = await self.memory.write(
             peer_id=self.mate_id,
             ts_world=self.now_world(),
             kind="conversation",
             text=summary.text,
         )
-        # Keeper-involved memories carry the +2 importance bias (§4.4).
+        # Keeper-involved memories carry the +2 importance bias (§4.4),
+        # scoped to only the row just written for this exchange -- the
+        # Mate is itself a map peer that can hold ordinary peer-to-peer
+        # conversations (converse.py), so scoring the peer's *whole*
+        # pending batch here would let an unrelated pending memory
+        # inherit a bias meant only for Keeper exchanges (finding).
         await self.memory.score_pending_importance(
-            self.llm, self.mate_id, bias=KEEPER_BIAS
+            self.llm, self.mate_id, bias=KEEPER_BIAS, only_ids=[memory_id]
         )
