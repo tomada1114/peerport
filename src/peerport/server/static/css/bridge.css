@@ -461,3 +461,48 @@ body {
   color: var(--ember);
   border-color: var(--ember);
 }
+
+/* --- Degraded states (#27) --------------------------------------------
+   Never a blocking modal: the fog line, low-power banner, and hard-stop
+   banner are plain flow content above the tab bodies, so the map and
+   the active tab stay visible and interactive through every state. */
+
+.state-banner {
+  padding: 6px 10px 0;
+}
+
+.state-line {
+  margin: 0 0 4px;
+  font-size: 12px;
+  color: var(--mist);
+  cursor: pointer;
+}
+
+.state-detail {
+  margin: -2px 0 4px;
+  font-size: 11px;
+  color: var(--mist);
+}
+
+.low-power-banner {
+  color: var(--beacon-amber);
+  cursor: default;
+}
+
+.hard-stop-banner {
+  margin-bottom: 6px;
+  padding: 8px;
+  border: 1px solid var(--ember);
+  border-radius: 4px;
+  color: var(--ember);
+}
+
+.hard-stop-banner p {
+  margin: 0 0 6px;
+  font-size: 13px;
+}
+
+.hard-stop-settings-link {
+  color: var(--ember);
+  border-color: var(--ember);
+}

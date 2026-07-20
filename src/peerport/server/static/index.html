@@ -52,6 +52,9 @@
               window.dispatchEvent(new CustomEvent("peerport:notes-updated"));
             } else if (frame.t === "event" && frame.kind === "search") {
               bridge.applySearchFlavor();
+            } else if (frame.t === "state") {
+              world.applyStateFrame(frame);
+              bridge.applyStateFrame(frame);
             }
           },
           onDisconnect: () => bridge.setReconnecting(true),

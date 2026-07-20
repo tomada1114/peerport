@@ -56,6 +56,16 @@ const TINT_CROSSFADE_MS = 30 * 60 * 1000; // ~30 world-minutes (1s = 1s)
 const DOCK_SQUARE = { col: 18, row: 14 };
 const LIGHTHOUSE = { col: 7, row: 16 };
 
+// LLM/API outage fog (#27, D-006): desaturated gray-teal at 40% max
+// opacity. Per map-layout.md's simulation hooks, "the sea fogs before
+// the town does" — the `~`/`M` tiles ramp in faster than everything
+// else so the pooling is visible in the first couple of seconds.
+export const FOG_COLOR = 0x5a7a82;
+export const FOG_TARGET_ALPHA = 0.4;
+const FOG_SEA_TILES = new Set(["~", "M"]);
+const FOG_SEA_RAMP_MS = 2000;
+const FOG_TOWN_RAMP_MS = 6000;
+
 export function zoomForViewport(height) {
   return height >= 3 * MAP_ROWS * TILE ? 3 : 2;
 }
@@ -72,6 +82,15 @@ export class WorldRenderer {
     this.tintFrom = { ...BAND_TINTS.day };
     this.tintTo = { ...BAND_TINTS.day };
     this.tintChangedAt = 0;
+    // Fog overlay state (#27): target alpha the two fog layers ramp
+    // toward, and the "from" values/timestamp driving that ramp.
+    this.fogTarget = 0;
+    this.seaFogFrom = 0;
+    this.townFogFrom = 0;
+    this.fogChangedAt = 0;
+    // Hard-cap night-still frame (#27): forces the Night tint regardless
+    // of the actual band while true; cleared on a "resumed" state frame.
+    this.hardStop = false;
     this.reducedMotion =
       typeof matchMedia !== "undefined" &&
       matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -97,6 +116,7 @@ export class WorldRenderer {
     this._buildTiles();
     this._buildBeam();
     this._buildTint();
+    this._buildFog();
     this._bindCamera();
     this.centerOn(DOCK_SQUARE.col, DOCK_SQUARE.row);
     this.app.ticker.add(() => this._frame());
@@ -165,6 +185,27 @@ export class WorldRenderer {
     this.tint.endFill();
     this.tint.alpha = 0;
     this.camera.addChild(this.tint);
+  }
+
+  // Two fog layers so the sea (`~`/`M`) can pool ahead of the town, per
+  // map-layout.md's simulation hooks (#27). Both start fully transparent;
+  // `applyStateFrame`/`_frame` ramp them toward `fogTarget` on an outage.
+  _buildFog() {
+    const seaFog = new PIXI.Graphics();
+    const townFog = new PIXI.Graphics();
+    this.map.ground.forEach((row, r) => {
+      [...row].forEach((ch, c) => {
+        const layer = FOG_SEA_TILES.has(ch) ? seaFog : townFog;
+        layer.beginFill(FOG_COLOR);
+        layer.drawRect(c * TILE, r * TILE, TILE, TILE);
+        layer.endFill();
+      });
+    });
+    seaFog.alpha = 0;
+    townFog.alpha = 0;
+    this.camera.addChild(seaFog, townFog);
+    this.seaFog = seaFog;
+    this.townFog = townFog;
   }
 
   _bindCamera() {
@@ -260,6 +301,24 @@ export class WorldRenderer {
       this.tintTo = BAND_TINTS[frame.band] ?? BAND_TINTS.day;
       this.tintChangedAt = performance.now();
       this.band = frame.band;
+    }
+  }
+
+  // Degraded-state wire frames (#27): `{"t": "state", "state": ...}`.
+  // Peer movement is untouched here — an outage only ever adds the fog
+  // overlay; only a hard-cap trip (owned by #16, consumed here) freezes
+  // the world, and it does so by the server simply no longer sending
+  // diffs while `simulation.paused` — this only forces the tint lock.
+  applyStateFrame(frame) {
+    if (frame.state === "fog") {
+      this.seaFogFrom = this.seaFog.alpha;
+      this.townFogFrom = this.townFog.alpha;
+      this.fogTarget = frame.active ? FOG_TARGET_ALPHA : 0;
+      this.fogChangedAt = performance.now();
+    } else if (frame.state === "hard_stop") {
+      this.hardStop = true;
+    } else if (frame.state === "resumed") {
+      this.hardStop = false;
     }
   }
 
@@ -360,16 +419,30 @@ export class WorldRenderer {
       const y = lerp(entry.from.pos_y, entry.to.pos_y, ratio) * TILE;
       entry.sprite.position.set(x, y - (TILE - SPRITE_W) / 2);
     }
-    const fade = this.tintChangedAt
-      ? Math.min((now - this.tintChangedAt) / TINT_CROSSFADE_MS, 1)
-      : 1;
-    this.tint.tint = fade < 1 ? this.tintFrom.color : this.tintTo.color;
-    this.tint.alpha = lerp(this.tintFrom.alpha, this.tintTo.alpha, fade);
+    if (this.hardStop) {
+      // Night-still frame (REQ-007): lock to Night's exact tint
+      // regardless of the actual band while the hard cap holds.
+      this.tint.tint = BAND_TINTS.night.color;
+      this.tint.alpha = BAND_TINTS.night.alpha;
+    } else {
+      const fade = this.tintChangedAt
+        ? Math.min((now - this.tintChangedAt) / TINT_CROSSFADE_MS, 1)
+        : 1;
+      this.tint.tint = fade < 1 ? this.tintFrom.color : this.tintTo.color;
+      this.tint.alpha = lerp(this.tintFrom.alpha, this.tintTo.alpha, fade);
+    }
     if (!this.reducedMotion) {
       this.beam.rotation = ((now % BEAM_SWEEP_MS) / BEAM_SWEEP_MS) * Math.PI * 2;
       this.beam.alpha = BEAM_ALPHAS[this.band] ?? BEAM_ALPHAS.day;
     }
     this.lensGlow.alpha = (BEAM_ALPHAS[this.band] ?? 0.06) * 2;
+
+    if (this.fogChangedAt) {
+      const seaRatio = Math.min((now - this.fogChangedAt) / FOG_SEA_RAMP_MS, 1);
+      const townRatio = Math.min((now - this.fogChangedAt) / FOG_TOWN_RAMP_MS, 1);
+      this.seaFog.alpha = lerp(this.seaFogFrom, this.fogTarget, seaRatio);
+      this.townFog.alpha = lerp(this.townFogFrom, this.fogTarget, townRatio);
+    }
   }
 }
 

@@ -31,6 +31,7 @@ export class Bridge {
 
   init() {
     this._renderRail();
+    this._renderStateBanner();
     this._renderBodies();
     this._renderHud();
     this._bindKeyboard();
@@ -57,6 +58,45 @@ export class Bridge {
     this.reconnectChip.textContent = t("state.reconnecting");
     rail.append(this.reconnectChip);
     this.root.append(rail);
+  }
+
+  // Degraded-state notices (#27): plain flow content above the tab
+  // bodies, visible no matter which tab is active. Never a modal — the
+  // map and the active tab stay reachable through every state.
+  _renderStateBanner() {
+    this.stateBanner = document.createElement("div");
+    this.stateBanner.className = "state-banner";
+
+    this.fogLine = document.createElement("p");
+    this.fogLine.className = "state-line fog-line hidden";
+    this.fogLine.textContent = t("state.fog");
+    this.fogLine.addEventListener("click", () =>
+      this.fogDetail.classList.toggle("hidden"),
+    );
+    this.fogDetail = document.createElement("p");
+    this.fogDetail.className = "state-detail hidden";
+
+    this.lowPowerBanner = document.createElement("p");
+    this.lowPowerBanner.className = "state-line low-power-banner hidden";
+    this.lowPowerBanner.textContent = t("state.low_power");
+
+    this.hardStopBanner = document.createElement("div");
+    this.hardStopBanner.className = "hard-stop-banner hidden";
+    const hardStopText = document.createElement("p");
+    hardStopText.textContent = t("state.hard_stop");
+    const settingsLink = document.createElement("button");
+    settingsLink.className = "hud-button hard-stop-settings-link";
+    settingsLink.textContent = t("tab.settings");
+    settingsLink.addEventListener("click", () => this.switchTab("settings"));
+    this.hardStopBanner.append(hardStopText, settingsLink);
+
+    this.stateBanner.append(
+      this.fogLine,
+      this.fogDetail,
+      this.lowPowerBanner,
+      this.hardStopBanner,
+    );
+    this.root.append(this.stateBanner);
   }
 
   _renderBodies() {
@@ -627,11 +667,47 @@ export class Bridge {
 
   applySpendFrame(frame) {
     this.spendToday = frame.amount;
+    if (typeof frame.low_power === "boolean") {
+      this.spendChip.classList.toggle("low-power", frame.low_power);
+      this.lowPowerBanner.classList.toggle("hidden", !frame.low_power);
+    }
     this._refreshHud();
   }
 
   setReconnecting(reconnecting) {
     this.reconnectChip.classList.toggle("hidden", !reconnecting);
+  }
+
+  // Degraded-state wire frames (#27): `{"t": "state", "state": ...}`.
+  // Fog and hard-stop reuse the existing "state" frame type; see
+  // net.js/index.html for the dispatch into this method.
+  applyStateFrame(frame) {
+    if (frame.state === "fog") {
+      this._applyFogState(frame.active, frame.status);
+    } else if (frame.state === "hard_stop") {
+      this._applyHardStop(true);
+    } else if (frame.state === "resumed") {
+      this._applyHardStop(false);
+    }
+  }
+
+  _applyFogState(active, status) {
+    this.fogLine.classList.toggle("hidden", !active);
+    this.fogDetail.classList.add("hidden");
+    if (active) {
+      this.fogDetail.textContent = t("state.fog.detail", {
+        status: String(status ?? ""),
+      });
+    }
+  }
+
+  _applyHardStop(active) {
+    this.hardStopBanner.classList.toggle("hidden", !active);
+    this.spendChip.classList.toggle("hard-stop", active);
+    if (active) {
+      this.paused = true;
+      this._refreshHud();
+    }
   }
 
   async _togglePause() {

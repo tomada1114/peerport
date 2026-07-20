@@ -18,12 +18,14 @@ from peerport.llm.client import (
     TransportRateLimitedError,
     TransportReply,
     TransportUnavailableError,
+    call_stream,
 )
+from peerport.llm.outage import OutageTracker
 from peerport.llm.prompts import WORLD_RULES, assemble_prompt, build_fixed_prefix
 
 if TYPE_CHECKING:
     import sqlite3
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator
     from pathlib import Path
 
 
@@ -348,3 +350,186 @@ class TestPromptDiscipline:
         assert isinstance(prompt, str)
         assert prompt.startswith(fixed)
         assert prompt.endswith("now: morning")
+
+
+class TestTransportUnavailableStatus:
+    def test_status_defaults_to_none(self) -> None:
+        error = TransportUnavailableError("boom")
+        assert error.status is None
+
+    def test_status_is_stored_when_given(self) -> None:
+        error = TransportUnavailableError("boom", status=503)
+        assert error.status == 503
+
+
+class FakeStreamingTransport(FakeTransport):
+    """`FakeTransport` plus a queued `stream_complete` (outage reporting, #27)."""
+
+    async def stream_complete(
+        self,
+        *,
+        model: str,
+        prompt: str,
+        max_output_tokens: int,
+        on_delta: Callable[[str], object],
+        tools: list[dict[str, object]] | None = None,
+    ) -> TransportReply:
+        self.calls.append(
+            {
+                "model": model,
+                "prompt": prompt,
+                "max_output_tokens": max_output_tokens,
+                "tools": tools,
+            }
+        )
+        reply = self.replies.pop(0) if self.replies else TransportReply(text="ok")
+        if isinstance(reply, Exception):
+            raise reply
+        assert isinstance(reply, TransportReply)
+        result = on_delta(reply.text)
+        if hasattr(result, "__await__"):
+            await result
+        return reply
+
+
+def _outage_recorder() -> tuple[
+    list[tuple[bool, int | None]], Callable[[bool, int | None], None]
+]:
+    """A `changes` list plus an `on_change` callback that appends to it."""
+    changes: list[tuple[bool, int | None]] = []
+
+    def on_change(active: bool, status: int | None) -> None:
+        changes.append((active, status))
+
+    return changes, on_change
+
+
+def _is_outage_active(client: LLMClient) -> bool:
+    """Read `client.outage.active` through a call boundary.
+
+    Asserting the same `client.outage.active` expression `is True` then
+    later `is False` makes mypy's attribute narrowing treat the second
+    assert as unreachable (it doesn't see `report_success()` mutating the
+    tracker); routing the read through this function's declared `bool`
+    return type sidesteps that false positive.
+    """
+    assert client.outage is not None
+    return client.outage.active
+
+
+class TestOutageReporting:
+    """LLM outage detection (#27): call sites report to `client.outage`."""
+
+    def test_outage_defaults_to_none(self, conn: sqlite3.Connection) -> None:
+        client = make_client(conn, FakeTransport())
+        assert client.outage is None
+
+    @pytest.mark.anyio
+    async def test_single_failed_call_does_not_trip_outage(
+        self, conn: sqlite3.Connection
+    ) -> None:
+        client = make_client(
+            conn,
+            FakeTransport(
+                [
+                    TransportUnavailableError("boom", status=503),
+                    TransportUnavailableError("boom", status=503),
+                    TransportUnavailableError("boom", status=503),
+                    TransportUnavailableError("boom", status=503),
+                ]
+            ),
+        )
+        client.outage = OutageTracker()
+
+        with pytest.raises(LLMCallError):
+            await client.call(role="background", prompt=PromptParts("f", "v"))
+
+        assert client.outage.active is False
+
+    @pytest.mark.anyio
+    async def test_two_consecutive_failed_calls_trip_outage_with_status(
+        self, conn: sqlite3.Connection
+    ) -> None:
+        changes, on_change = _outage_recorder()
+        transport = FakeTransport([TransportUnavailableError("boom", status=503)] * 8)
+        client = make_client(conn, transport)
+        client.outage = OutageTracker(on_change=on_change)
+
+        for _ in range(2):
+            with pytest.raises(LLMCallError):
+                await client.call(role="background", prompt=PromptParts("f", "v"))
+
+        assert client.outage.active is True
+        assert changes == [(True, 503)]
+
+    @pytest.mark.anyio
+    async def test_rate_limit_failures_report_status_429(
+        self, conn: sqlite3.Connection
+    ) -> None:
+        changes, on_change = _outage_recorder()
+        transport = FakeTransport(
+            [TransportRateLimitedError("429"), TransportRateLimitedError("429")]
+        )
+        client = make_client(conn, transport)
+        client.outage = OutageTracker(on_change=on_change)
+
+        await client.call(role="mate", prompt=PromptParts("f", "v"))
+        await client.call(role="mate", prompt=PromptParts("f", "v"))
+
+        assert client.outage.active is True
+        assert changes == [(True, 429)]
+
+    @pytest.mark.anyio
+    async def test_success_reports_to_outage_tracker_and_clears_it(
+        self, conn: sqlite3.Connection
+    ) -> None:
+        changes, on_change = _outage_recorder()
+        transport = FakeTransport(
+            [TransportUnavailableError("boom", status=503)] * 8
+            + [TransportReply(text="back")]
+        )
+        client = make_client(conn, transport)
+        client.outage = OutageTracker(on_change=on_change)
+        for _ in range(2):
+            with pytest.raises(LLMCallError):
+                await client.call(role="background", prompt=PromptParts("f", "v"))
+        assert _is_outage_active(client) is True
+
+        result = await client.call(role="background", prompt=PromptParts("f", "v"))
+
+        assert result.text == "back"
+        assert _is_outage_active(client) is False
+        assert changes == [(True, 503), (False, None)]
+
+    @pytest.mark.anyio
+    async def test_call_stream_reports_failure_then_success(
+        self, conn: sqlite3.Connection
+    ) -> None:
+        changes, on_change = _outage_recorder()
+        transport = FakeStreamingTransport(
+            [
+                TransportUnavailableError("boom", status=500),
+                TransportUnavailableError("boom", status=500),
+                TransportReply(text="hello"),
+            ]
+        )
+        client = make_client(conn, transport)
+        client.outage = OutageTracker(on_change=on_change)
+
+        async def on_delta(_token: str) -> None:
+            return
+
+        for _ in range(2):
+            result = await call_stream(
+                client, role="mate", prompt=PromptParts("f", "v"), on_delta=on_delta
+            )
+            assert result.skipped is True
+        assert _is_outage_active(client) is True
+
+        result = await call_stream(
+            client, role="mate", prompt=PromptParts("f", "v"), on_delta=on_delta
+        )
+
+        assert result.text == "hello"
+        assert _is_outage_active(client) is False
+        assert changes == [(True, 500), (False, None)]

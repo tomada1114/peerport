@@ -207,3 +207,88 @@ class TestNotesFrontendContract:
         css = (STATIC / "css" / "bridge.css").read_text()
         assert ".notes-delete-button" in css
         assert "var(--ember)" in css
+
+
+class TestDegradedStatesFrontend:
+    """Proxy verification for #27's diegetic fog/low-power/hard-stop UI."""
+
+    def test_index_dispatches_state_frames_to_world_and_bridge(self) -> None:
+        html = (STATIC / "index.html").read_text()
+        assert 'frame.t === "state"' in html
+        assert "world.applyStateFrame(frame)" in html
+        assert "bridge.applyStateFrame(frame)" in html
+
+    def test_bridge_js_resolves_degraded_state_strings_via_catalog(self) -> None:
+        source = (STATIC / "js" / "bridge.js").read_text()
+        for key in (
+            "state.fog",
+            "state.fog.detail",
+            "state.low_power",
+            "state.hard_stop",
+            "tab.settings",
+        ):
+            assert key in source, f"bridge.js never references catalog key {key}"
+
+    def test_bridge_js_toggles_spend_chip_low_power_and_hard_stop_classes(
+        self,
+    ) -> None:
+        source = (STATIC / "js" / "bridge.js").read_text()
+        assert 'classList.toggle("low-power"' in source
+        assert 'classList.toggle("hard-stop"' in source
+
+    def test_bridge_js_hard_stop_banner_links_to_settings_tab(self) -> None:
+        source = (STATIC / "js" / "bridge.js").read_text()
+        assert 'this.switchTab("settings")' in source
+        assert "hardStopBanner" in source
+
+    def test_bridge_js_fog_detail_substitutes_status(self) -> None:
+        source = (STATIC / "js" / "bridge.js").read_text()
+        assert 't("state.fog.detail", {' in source
+        assert "status: String(status" in source
+
+    def test_world_js_fog_overlay_uses_spec_color_and_alpha(self) -> None:
+        source = (STATIC / "js" / "world.js").read_text()
+        assert "0x5a7a82" in source.lower()
+        assert "FOG_TARGET_ALPHA = 0.4" in source
+
+    def test_world_js_fog_pools_over_sea_and_mist_tiles_first(self) -> None:
+        source = (STATIC / "js" / "world.js").read_text()
+        assert 'FOG_SEA_TILES = new Set(["~", "M"])' in source
+        assert "FOG_SEA_RAMP_MS" in source
+        assert "FOG_TOWN_RAMP_MS" in source
+
+    def test_world_js_hard_stop_locks_to_night_tint(self) -> None:
+        source = (STATIC / "js" / "world.js").read_text()
+        assert "hardStop" in source
+        assert "BAND_TINTS.night" in source
+
+    def test_world_js_applies_state_frames(self) -> None:
+        source = (STATIC / "js" / "world.js").read_text()
+        assert "applyStateFrame(frame)" in source
+
+    def test_no_blocking_modal_introduced_for_degraded_states(self) -> None:
+        """REQ-009: the harbor stays visible — never a blocking modal.
+
+        Checks for an actual modal/backdrop *implementation* (a CSS
+        selector or a className literal), not just the word "modal"
+        showing up in an explanatory code comment.
+        """
+        css = (STATIC / "css" / "bridge.css").read_text().lower()
+        assert ".modal" not in css
+        assert ".backdrop" not in css
+        for path in ("js/bridge.js", "js/world.js"):
+            source = (STATIC / path).read_text().lower()
+            assert '"modal' not in source
+            assert '"backdrop' not in source
+
+    def test_locale_catalogs_carry_every_degraded_state_key(self) -> None:
+        for locale in ("en", "ja"):
+            catalog = json.loads((REPO_ROOT / "locales" / f"{locale}.json").read_text())
+            for key in (
+                "state.fog",
+                "state.fog.detail",
+                "state.reconnecting",
+                "state.low_power",
+                "state.hard_stop",
+            ):
+                assert key in catalog, f"{locale}.json missing {key}"
