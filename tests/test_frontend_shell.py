@@ -292,3 +292,58 @@ class TestDegradedStatesFrontend:
                 "state.hard_stop",
             ):
                 assert key in catalog, f"{locale}.json missing {key}"
+
+
+class TestOnboardingFrontendContract:
+    """Proxy verification for #29's first-run flow (order per D-018)."""
+
+    def test_bridge_js_resolves_onboarding_strings_via_catalog(self) -> None:
+        source = (STATIC / "js" / "bridge.js").read_text()
+        for key in (
+            "onboarding.api_key.title",
+            "onboarding.locale.title",
+            "onboarding.keeper_name.title",
+        ):
+            assert key in source, f"bridge.js never references catalog key {key}"
+
+    def test_bridge_js_drives_the_flow_via_the_onboarding_and_settings_apis(
+        self,
+    ) -> None:
+        source = (STATIC / "js" / "bridge.js").read_text()
+        assert "/api/onboarding" in source
+        assert "/api/settings" in source
+
+    def test_bridge_js_dispatches_onboarding_complete_event_once_per_finish(
+        self,
+    ) -> None:
+        """REQ-008: this ticket only triggers the beam-sweep beat as an event."""
+        source = (STATIC / "js" / "bridge.js").read_text()
+        assert "peerport:onboarding-complete" in source
+        assert source.count("peerport:onboarding-complete") == 1
+
+    def test_onboarding_overlay_dims_the_map_without_ever_hiding_it(self) -> None:
+        """REQ-009: the map stays present/rendering, only visually dimmed."""
+        css = (STATIC / "css" / "bridge.css").read_text()
+        assert ".onboarding-overlay" in css
+        source = (STATIC / "js" / "bridge.js").read_text()
+        assert "mapPane.classList.add" not in source
+        assert "mapPane.style.display" not in source
+
+    def test_no_blocking_modal_class_introduced_for_onboarding(self) -> None:
+        css = (STATIC / "css" / "bridge.css").read_text().lower()
+        assert ".modal" not in css
+        assert ".backdrop" not in css
+
+    def test_mate_naming_defaults_to_beacon(self) -> None:
+        """REQ-007: Beacon is the default unless the Keeper renames Mate."""
+        source = (STATIC / "js" / "bridge.js").read_text()
+        assert '"Beacon"' in source
+
+    def test_i18n_js_supports_a_runtime_locale_switch(self) -> None:
+        """REQ-005: the step-2 locale choice must apply before steps 3-4."""
+        source = (STATIC / "js" / "i18n.js").read_text()
+        assert "export async function setLocale" in source
+
+    def test_bridge_js_switches_locale_when_choosing_it_in_onboarding(self) -> None:
+        source = (STATIC / "js" / "bridge.js").read_text()
+        assert "setLocale(" in source

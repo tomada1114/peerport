@@ -39,6 +39,16 @@ export function locale() {
   return activeLocale;
 }
 
+// Runtime locale switch (#29): onboarding's step 2 lets the Keeper pick
+// en/ja before the first Mate conversation (D-018), so the active
+// catalog must be swappable after `initI18n()` already ran, not just
+// fixed from config.toml at boot.
+export async function setLocale(localeName) {
+  activeCatalog =
+    localeName === "en" ? fallbackCatalog : await fetchJson(`/api/locales/${localeName}`);
+  activeLocale = localeName;
+}
+
 // Test hook: inject catalogs without network (also used by dev tooling).
 export function _setCatalogs(active, fallback, localeName = "en") {
   activeCatalog = active;

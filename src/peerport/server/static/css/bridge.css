@@ -506,3 +506,86 @@ body {
   color: var(--ember);
   border-color: var(--ember);
 }
+
+/* --- Onboarding (#29) -----------------------------------------------
+   Full-screen scrim over the dimmed-not-hidden map/Bridge for the
+   first-run flow (api_key -> locale -> keeper_name -> mate_name, order
+   per D-018). Step 4 switches to the light scrim so the live Bridge
+   chat underneath (#18) stays reachable while Mate naming happens
+   inside that conversation. */
+
+.onboarding-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 500;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(16, 29, 38, 0.72);
+}
+
+.onboarding-overlay.onboarding-light {
+  pointer-events: none;
+  background: rgba(16, 29, 38, 0.32);
+}
+
+.onboarding-card {
+  min-width: 280px;
+  padding: 24px;
+  background: var(--tide-deep);
+  border: 1px solid var(--tide-line);
+  border-radius: 6px;
+  text-align: center;
+}
+
+.onboarding-card h2 {
+  margin: 0 0 12px;
+  font-size: 16px;
+}
+
+.onboarding-code {
+  display: inline-block;
+  margin-top: 8px;
+  padding: 4px 8px;
+  background: var(--harbor-night);
+  border-radius: 4px;
+  color: var(--signal-cyan);
+}
+
+.onboarding-locale-row {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+}
+
+.onboarding-name-input {
+  display: block;
+  width: 100%;
+  margin: 8px 0;
+  padding: 6px 8px;
+  background: var(--harbor-night);
+  border: 1px solid var(--tide-line);
+  border-radius: 4px;
+  color: var(--foam);
+}
+
+.onboarding-name-input.invalid {
+  border-color: var(--ember);
+}
+
+.onboarding-mate-name-bar {
+  display: flex;
+  gap: 8px;
+  padding: 8px 10px;
+  background: var(--tide-deep);
+  border-bottom: 1px solid var(--tide-line);
+}
+
+.onboarding-mate-name-input {
+  flex: 1;
+  padding: 4px 8px;
+  background: var(--harbor-night);
+  border: 1px solid var(--tide-line);
+  border-radius: 4px;
+  color: var(--foam);
+}
