@@ -265,7 +265,7 @@ class TestOnboardingStepRouting:
         conn = open_db(tmp_path / "onboarding3.db")
         conn.execute(
             "INSERT INTO world_state (key, value) VALUES (?, ?)",
-            (ONBOARDING_KEEPER_NAME_KEY, "Rin"),
+            (ONBOARDING_KEEPER_NAME_KEY, "Nova"),
         )
         conn.commit()
         app = create_app()
@@ -294,7 +294,7 @@ class TestPostSettingsOnboardingFields:
             assert response.status_code == 200
             assert response.json()["step"] == "keeper_name"
 
-            response = client.post("/api/settings", json={"keeper_name": "Rin"})
+            response = client.post("/api/settings", json={"keeper_name": "Nova"})
             assert response.json()["step"] == "mate_name"
         conn.close()
 
@@ -351,7 +351,7 @@ class TestOnboardingCompletion:
     ) -> Response:
         _wire_onboarding_app(app, conn)
         client.post("/api/settings", json={"locale": "en"})
-        client.post("/api/settings", json={"keeper_name": "Rin"})
+        client.post("/api/settings", json={"keeper_name": "Nova"})
         response: Response = client.post("/api/settings", json={"mate_name": mate_name})
         return response
 
@@ -410,7 +410,7 @@ class TestOnboardingCompletion:
         with TestClient(app) as client:
             app.state.db_conn = conn
             client.post("/api/settings", json={"locale": "en"})
-            client.post("/api/settings", json={"keeper_name": "Rin"})
+            client.post("/api/settings", json={"keeper_name": "Nova"})
             response = client.post("/api/settings", json={"mate_name": "Beacon"})
 
         assert response.status_code == 200
