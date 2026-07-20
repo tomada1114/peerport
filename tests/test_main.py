@@ -283,6 +283,44 @@ class TestMain:
         assert row is not None
         assert before <= int(row[0]) <= after
 
+    @pytest.mark.usefixtures("world_files")
+    def test_uvicorn_run_exception_still_persists_world_state(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A crash inside uvicorn.run() must not lose world state (finding).
+
+        Before the fix, save_world_seconds/save_last_shutdown_ts_real
+        only ran after uvicorn.run() returned normally, so a startup
+        exception (e.g. the configured port already in use) silently
+        dropped however much world time had accrued.
+        """
+
+        def _raise_run(app: object, **kwargs: object) -> None:
+            message = "port already in use"
+            raise OSError(message)
+
+        monkeypatch.setattr("peerport.__main__.uvicorn.run", _raise_run)
+        monkeypatch.chdir(tmp_path)
+
+        before = int(time.time())
+        with pytest.raises(OSError, match="port already in use"):
+            main([])
+        after = int(time.time())
+
+        conn = open_db(tmp_path / "data" / "peerport.db")
+        try:
+            world_seconds_row = conn.execute(
+                "SELECT value FROM world_state WHERE key = 'world_seconds'"
+            ).fetchone()
+            shutdown_row = conn.execute(
+                "SELECT value FROM world_state WHERE key = 'last_shutdown_ts_real'"
+            ).fetchone()
+        finally:
+            conn.close()
+        assert world_seconds_row is not None
+        assert shutdown_row is not None
+        assert before <= int(shutdown_row[0]) <= after
+
 
 class TestDegradedStateWiring:
     """#27: the shared outage tracker and hard-cap signal.

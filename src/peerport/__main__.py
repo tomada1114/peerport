@@ -253,6 +253,7 @@ def _wire_mate_chat(ctx: WireContext) -> None:
         mate_id=mate.id,
         fixed_prefix=build_fixed_prefix(mate.body, ctx.config.locale),
         now_world=lambda: ctx.simulation.state.world_seconds,
+        locale=ctx.config.locale,
     )
 
 
@@ -464,15 +465,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     _wire_peer_society(ctx)
     _wire_logbook(ctx)
     _wire_reflection(ctx)
-    uvicorn.run(
-        app,
-        host="127.0.0.1",
-        port=config.server.port,
-        log_level="debug" if args.debug else "info",
-    )
-    save_world_seconds(conn, simulation.state.world_seconds)
-    save_last_shutdown_ts_real(conn, int(time.time()))
-    conn.close()
+    try:
+        uvicorn.run(
+            app,
+            host="127.0.0.1",
+            port=config.server.port,
+            log_level="debug" if args.debug else "info",
+        )
+    finally:
+        # Runs on a clean shutdown *and* on a startup/run-time exception
+        # (e.g. the configured port already being in use) so the world
+        # clock and last-shutdown timestamp are never lost and the DB
+        # connection is never leaked.
+        save_world_seconds(conn, simulation.state.world_seconds)
+        save_last_shutdown_ts_real(conn, int(time.time()))
+        conn.close()
     return 0
 
 
