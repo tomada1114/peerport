@@ -101,14 +101,10 @@ def make_outage_handler(
     """Build the shared `OutageTracker.on_change` callback (#27).
 
     Broadcasts the diegetic fog state as a `{"t": "state", "state": "fog"}`
-    frame. `app.state.broadcaster` is read lazily inside the returned
-    closure rather than captured now, because `_wire_*` helpers run
-    before the app's lifespan sets it (the broadcaster only exists once
-    uvicorn actually starts serving).
+    frame.
 
     Args:
-        app: The FastAPI app whose broadcaster will exist by the time an
-            outage actually flips.
+        app: The FastAPI app whose `state.broadcaster` fans out the frame.
         simulation: When given, the outage is also mirrored onto
             `simulation.fog_active`/`fog_status` so a reconnecting
             client's snapshot can resync the fog banner (finding).
@@ -140,8 +136,7 @@ def make_hard_cap_handler(app: FastAPI, simulation: Simulation) -> Callable[[], 
     or re-broadcasting on each subsequent call site.
 
     Args:
-        app: The FastAPI app whose broadcaster will exist by trip time
-            (see `make_outage_handler`'s docstring for why this is lazy).
+        app: The FastAPI app whose `state.broadcaster` fans out the frame.
         simulation: The world simulation to pause.
 
     Returns:
@@ -293,6 +288,7 @@ def _wire_friends(ctx: WireContext) -> MailService | None:
         personas=ctx.personas,
         clock=ctx.simulation.clock,
         now_world=lambda: ctx.simulation.state.world_seconds,
+        broadcaster=ctx.app.state.broadcaster,
         cadence_days=ctx.config.mail.cadence_days,
         locale=ctx.config.locale,
     )

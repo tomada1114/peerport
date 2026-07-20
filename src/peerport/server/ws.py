@@ -33,8 +33,8 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 
     Args:
         websocket: The inbound WebSocket connection. `app.state.world_state`
-            and `app.state.broadcaster` must already be set (done by
-            `server/app.py`'s lifespan).
+            (set by `server/app.py`'s lifespan) and `app.state.broadcaster`
+            (set at `create_app()` construction) must already exist.
     """
     await websocket.accept()
     state: WorldState = websocket.app.state.world_state

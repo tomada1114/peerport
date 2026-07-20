@@ -333,19 +333,11 @@ class TestMain:
 class TestDegradedStateWiring:
     """#27: the shared outage tracker and hard-cap signal.
 
-    Both must reach every LLM-gated engine `main()` wires. Pre-existing
-    bug found while writing this test (unrelated to #27, not fixed -
-    see the report): `_wire_mate_chat` and `_wire_peer_society`
-    construct `MateChat`/`ConversationEngine` with
-    `broadcaster=ctx.app.state.broadcaster` evaluated eagerly, but the
-    app's lifespan (which sets `app.state.broadcaster`) only runs once
-    uvicorn actually starts serving - well after `main()`'s `_wire_*`
-    calls, so `main()` crashes at `_wire_mate_chat` whenever
-    OPENAI_API_KEY is set, before ever reaching `_wire_friends` or
-    `_wire_logbook`. The two broken helpers are stubbed out here (like
-    this file already stubs `uvicorn.run`) so `main()` can still be
-    driven end-to-end to prove the #27 wiring on the two helpers that
-    bug doesn't affect.
+    Both must reach every LLM-gated engine `main()` wires. Driving
+    `main()` end-to-end with OPENAI_API_KEY set (only `uvicorn.run`
+    stubbed) also regression-tests the boot crash where `_wire_mate_chat`
+    read `app.state.broadcaster` before it existed: the broadcaster is
+    now created at `create_app()` construction time, not in the lifespan.
     """
 
     @pytest.mark.usefixtures("world_files")
@@ -357,8 +349,6 @@ class TestDegradedStateWiring:
     ) -> None:
         monkeypatch.chdir(tmp_path)
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test-fake")
-        monkeypatch.setattr("peerport.__main__._wire_mate_chat", lambda _ctx: None)
-        monkeypatch.setattr("peerport.__main__._wire_peer_society", lambda _ctx: None)
 
         main([])
 
