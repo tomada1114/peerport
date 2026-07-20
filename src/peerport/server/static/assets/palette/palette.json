@@ -1,0 +1,85 @@
+{
+ "max_colors": 32,
+ "colors": [
+  {
+   "hex": "#101D26",
+   "token": "harbor-night",
+   "zone": "cool"
+  },
+  {
+   "hex": "#16323E",
+   "token": "tide-deep",
+   "zone": "cool"
+  },
+  {
+   "hex": "#24485A",
+   "token": "tide-line",
+   "zone": "cool"
+  },
+  {
+   "hex": "#E8F1F2",
+   "token": "foam",
+   "zone": "neutral"
+  },
+  {
+   "hex": "#9FB8BE",
+   "token": "mist",
+   "zone": "cool"
+  },
+  {
+   "hex": "#3FD2C7",
+   "token": "signal-cyan",
+   "zone": "neon"
+  },
+  {
+   "hex": "#FFB454",
+   "token": "beacon-amber",
+   "zone": "warm"
+  },
+  {
+   "hex": "#E5735A",
+   "token": "ember",
+   "zone": "warm"
+  },
+  {
+   "hex": "#0B141B",
+   "token": null,
+   "zone": "cool"
+  },
+  {
+   "hex": "#2B5468",
+   "token": null,
+   "zone": "cool"
+  },
+  {
+   "hex": "#0E2733",
+   "token": null,
+   "zone": "cool"
+  },
+  {
+   "hex": "#1C3A48",
+   "token": null,
+   "zone": "cool"
+  },
+  {
+   "hex": "#FFD9A8",
+   "token": null,
+   "zone": "warm"
+  },
+  {
+   "hex": "#FFFFFF",
+   "token": null,
+   "zone": "neutral"
+  },
+  {
+   "hex": "#FF9868",
+   "token": null,
+   "zone": "warm"
+  },
+  {
+   "hex": "#1B3A66",
+   "token": null,
+   "zone": "cool"
+  }
+ ]
+}
