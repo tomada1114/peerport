@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import pytest
@@ -18,10 +19,18 @@ from peerport.llm.client import (
     TransportRateLimitedError,
     TransportReply,
     TransportUnavailableError,
+    _extract_tool_calls,
     call_stream,
+    strict_schema_for,
 )
 from peerport.llm.outage import OutageTracker
-from peerport.llm.prompts import WORLD_RULES, assemble_prompt, build_fixed_prefix
+from peerport.llm.prompts import (
+    WORLD_RULES,
+    LogbookEvents,
+    ReflectionInsights,
+    assemble_prompt,
+    build_fixed_prefix,
+)
 
 if TYPE_CHECKING:
     import sqlite3
@@ -247,6 +256,26 @@ class TestRetries:
         assert status == "skipped_rate_limit"
 
 
+class TestStrictSchemaFor:
+    def test_nested_defs_objects_forbid_additional_properties(self) -> None:
+        payload = strict_schema_for(LogbookEvents)
+        nested = payload["schema"]["$defs"]["LogbookEvent"]
+        assert nested["additionalProperties"] is False
+        assert set(nested["required"]) == {"peer_ids", "text"}
+
+    def test_top_level_still_forbids_additional_properties(self) -> None:
+        payload = strict_schema_for(LogbookEvents)
+        assert payload["schema"]["additionalProperties"] is False
+
+    def test_reflection_insights_nested_def_forbids_additional_properties(
+        self,
+    ) -> None:
+        payload = strict_schema_for(ReflectionInsights)
+        nested = payload["schema"]["$defs"]["ReflectionInsight"]
+        assert nested["additionalProperties"] is False
+        assert set(nested["required"]) == {"text", "importance"}
+
+
 class TestStructuredOutputs:
     @pytest.mark.anyio
     async def test_schema_call_sends_strict_schema(
@@ -335,6 +364,36 @@ class TestToolCalling:
         await client.call(role="background", prompt=PromptParts("f", "v"))
 
         assert transport.calls[0]["tools"] is None
+
+
+class TestExtractToolCalls:
+    """`_extract_tool_calls` parses the raw Responses API `output` list."""
+
+    def test_malformed_json_arguments_default_to_empty_dict(self) -> None:
+        item = SimpleNamespace(
+            type="function_call", name="create", call_id="call_1", arguments="{bad"
+        )
+        response = SimpleNamespace(output=[item])
+
+        calls = _extract_tool_calls(response)
+
+        assert calls == [ToolCall(id="call_1", name="create", arguments={})]
+
+    def test_malformed_json_arguments_are_logged(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        item = SimpleNamespace(
+            type="function_call", name="create", call_id="call_1", arguments="{bad"
+        )
+        response = SimpleNamespace(output=[item])
+
+        with caplog.at_level("WARNING"):
+            _extract_tool_calls(response)
+
+        assert any(
+            "create" in record.message and "{bad" in record.message
+            for record in caplog.records
+        )
 
 
 class TestPromptDiscipline:

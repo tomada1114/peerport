@@ -147,10 +147,31 @@ def estimate_cost_usd(
     ) / 1_000_000
 
 
+def _enforce_strict_object_nodes(node: dict[str, Any]) -> None:
+    """Recursively force `additionalProperties: false` + full `required`.
+
+    OpenAI's strict Structured Outputs mode requires every object node
+    in the schema to forbid extra properties and list every one of its
+    properties as required (nullable fields opt out via `anyOf` null,
+    not by omission) -- and that applies to nested models placed under
+    `$defs`, not just the schema's top-level object.
+    """
+    if node.get("type") == "object" and "properties" in node:
+        node["additionalProperties"] = False
+        node["required"] = list(node["properties"].keys())
+    for value in node.values():
+        if isinstance(value, dict):
+            _enforce_strict_object_nodes(value)
+        elif isinstance(value, list):
+            for item in value:
+                if isinstance(item, dict):
+                    _enforce_strict_object_nodes(item)
+
+
 def strict_schema_for(model_cls: type[BaseModel]) -> dict[str, Any]:
     """Build the strict Structured Outputs schema payload for a model."""
     json_schema = model_cls.model_json_schema()
-    json_schema["additionalProperties"] = False
+    _enforce_strict_object_nodes(json_schema)
     return {"name": model_cls.__name__, "strict": True, "schema": json_schema}
 
 
@@ -410,6 +431,12 @@ def _extract_tool_calls(
         try:
             arguments = json.loads(item.arguments)
         except (TypeError, ValueError):
+            logger.warning(
+                "malformed tool-call JSON for %s (call_id=%s): %r",
+                item.name,
+                item.call_id,
+                item.arguments,
+            )
             arguments = {}
         calls.append(ToolCall(id=item.call_id, name=item.name, arguments=arguments))
     return calls
