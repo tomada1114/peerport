@@ -29,6 +29,7 @@ from peerport.db import (
     mark_mail_read,
     set_world_state,
 )
+from peerport.llm.prompts import build_fixed_prefix
 from peerport.peers.personas import MAP_KINDS
 from peerport.world.clock import WorldClock
 
@@ -180,6 +181,10 @@ async def post_world(request: Request) -> JSONResponse:
         await request.app.state.broadcaster.publish({"t": "state", "state": "paused"})
     elif action == "resume":
         simulation.paused = False
+        # A "resumed" frame always clears the hard-stop banner client-side
+        # (`Bridge._applyHardStop(false)`) regardless of what caused the
+        # pause, so mirror that here too (finding).
+        simulation.hard_stop = False
         await request.app.state.broadcaster.publish({"t": "state", "state": "resumed"})
     elif action == "speed":
         speed = body.get("speed")
@@ -281,6 +286,39 @@ def _rename_mate(app_state: object, new_name: str) -> None:
         personas[mate_id] = replace(personas[mate_id], name=new_name)
 
 
+_LOCALE_AWARE_SERVICE_ATTRS = (
+    "decision_engine",
+    "conversation_engine",
+    "mail_service",
+    "logbook_service",
+    "reflection_engine",
+)
+
+
+def _apply_locale(app_state: object, locale: str) -> None:
+    """Propagate a newly chosen locale to every already-wired service.
+
+    D-018 fixed requirements.md §4.10's onboarding order specifically so
+    the first Mate conversation runs in the chosen locale -- but
+    `MateChat.fixed_prefix` is only ever built once at boot time from
+    `config.toml`'s locale, and none of the other locale-aware services
+    ever heard about a runtime change either (finding). A no-op per
+    service when it isn't wired (e.g. no OPENAI_API_KEY, or the bare
+    skeleton app most other route tests use).
+    """
+    mate_chat = getattr(app_state, "mate_chat", None)
+    if mate_chat is not None:
+        personas = getattr(app_state, "personas", None) or {}
+        mate_persona = personas.get(mate_chat.mate_id)
+        if mate_persona is not None:
+            mate_chat.fixed_prefix = build_fixed_prefix(mate_persona.body, locale)
+        mate_chat.locale = locale
+    for attr in _LOCALE_AWARE_SERVICE_ATTRS:
+        service = getattr(app_state, attr, None)
+        if service is not None:
+            service.locale = locale
+
+
 async def _write_seed_memories_once(
     app_state: object, conn: sqlite3.Connection, ts_world: int
 ) -> None:
@@ -337,6 +375,7 @@ async def post_settings(request: Request) -> JSONResponse:
         if locale not in VALID_LOCALES:
             return JSONResponse(status_code=422, content={"detail": "invalid locale"})
         set_world_state(conn, ONBOARDING_LOCALE_KEY, locale)
+        _apply_locale(request.app.state, locale)
 
     if "keeper_name" in body:
         keeper_name = str(body.get("keeper_name") or "").strip()

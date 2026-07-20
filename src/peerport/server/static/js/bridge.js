@@ -22,10 +22,11 @@ const MAX_INPUT_LINES = 4;
 // advanced via `POST /api/settings` -- the server is the single source
 // of truth for which step is reachable (REQ-001).
 const DEFAULT_MATE_NAME = "Beacon";
-const ONBOARDING_LOCALES = [
-  ["en", "English"],
-  ["ja", "日本語"],
-];
+// Labels resolve via `onboarding.locale.<loc>` (finding) so they stay
+// swappable/parity-checked through the catalogs like every other string,
+// even though a language name is conventionally shown in its own
+// language (both catalogs carry the same "English"/"日本語" values).
+const ONBOARDING_LOCALES = ["en", "ja"];
 
 export class Bridge {
   constructor(root, mapPane) {
@@ -228,6 +229,18 @@ export class Bridge {
       this.chatMessages.append(filedLine);
     }
     this.chatMessages.scrollTop = this.chatMessages.scrollHeight;
+  }
+
+  // A dropped WebSocket mid-stream means this response's `chat_done` will
+  // never arrive (the request was tied to that connection); leave the
+  // bubble's already-received partial text in place but stop appending
+  // to it, so the next reply after reconnect starts its own fresh bubble
+  // instead of splicing into this stale one (finding).
+  resetStreamingChat() {
+    if (this.streamingBubble) {
+      this.streamingCaret.remove();
+      this.streamingBubble = null;
+    }
   }
 
   applyDigest(frame) {
@@ -592,9 +605,10 @@ export class Bridge {
   }
 
   _refreshHud() {
-    this.clockLabel.textContent = `${t("hud.day", { n: this.day })} · ${t(
-      `hud.band.${this.band}`,
-    )}`;
+    this.clockLabel.textContent = t("date.world_day", {
+      n: this.day,
+      band: t(`hud.band.${this.band}`),
+    });
     this.pauseButton.textContent = this.paused ? t("hud.resume") : t("hud.pause");
     this.speedButton.textContent = `${this.speed}x`;
     this.spendChip.textContent = t("hud.spend_today", { amount: this.spendToday });
@@ -711,10 +725,10 @@ export class Bridge {
     title.textContent = t("onboarding.locale.title");
     const row = document.createElement("div");
     row.className = "onboarding-locale-row";
-    for (const [loc, label] of ONBOARDING_LOCALES) {
+    for (const loc of ONBOARDING_LOCALES) {
       const button = document.createElement("button");
       button.className = "hud-button";
-      button.textContent = label;
+      button.textContent = t(`onboarding.locale.${loc}`);
       button.addEventListener("click", () => this._chooseOnboardingLocale(loc));
       row.append(button);
     }
@@ -848,10 +862,14 @@ export class Bridge {
   applySpendFrame(frame) {
     this.spendToday = frame.amount;
     if (typeof frame.low_power === "boolean") {
-      this.spendChip.classList.toggle("low-power", frame.low_power);
-      this.lowPowerBanner.classList.toggle("hidden", !frame.low_power);
+      this._applyLowPower(frame.low_power);
     }
     this._refreshHud();
+  }
+
+  _applyLowPower(active) {
+    this.spendChip.classList.toggle("low-power", active);
+    this.lowPowerBanner.classList.toggle("hidden", !active);
   }
 
   setReconnecting(reconnecting) {
@@ -868,6 +886,21 @@ export class Bridge {
       this._applyHardStop(true);
     } else if (frame.state === "resumed") {
       this._applyHardStop(false);
+    }
+  }
+
+  // Resync on every (re)connect (finding): the snapshot is the guaranteed
+  // first message on every connection (net.js), so folding the current
+  // fog/hard-stop/low-power status into it lets a Keeper who reconnects
+  // mid-outage see the right banners immediately instead of only ever
+  // learning about them from a live `state` frame they may have missed.
+  applyDegradedSnapshot(frame) {
+    if (frame.fog) {
+      this._applyFogState(frame.fog.active, frame.fog.status);
+    }
+    this._applyHardStop(Boolean(frame.hard_stop));
+    if (typeof frame.low_power === "boolean") {
+      this._applyLowPower(frame.low_power);
     }
   }
 

@@ -18,6 +18,8 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from peerport.server.state import snapshot
 
 if TYPE_CHECKING:
+    from starlette.datastructures import State
+
     from peerport.server.state import Broadcaster, WorldState
 
 logger = logging.getLogger(__name__)
@@ -38,7 +40,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     state: WorldState = websocket.app.state.world_state
     broadcaster: Broadcaster = websocket.app.state.broadcaster
 
-    await websocket.send_json(snapshot(state))
+    await websocket.send_json(_build_snapshot(websocket.app.state, state))
     simulation = getattr(websocket.app.state, "simulation", None)
     if simulation is not None:
         await websocket.send_json(simulation.clock_frame())
@@ -48,6 +50,41 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         await _serve(websocket, queue)
     finally:
         broadcaster.unsubscribe(queue)
+
+
+def _build_snapshot(app_state: State, state: WorldState) -> dict[str, Any]:
+    """Build the snapshot frame, folding in current degraded-state status.
+
+    Every (re)connect gets a fresh snapshot as its first message
+    (`net.js`'s header comment); merging fog/hard-stop/low-power into it
+    lets a reconnecting client resync those Bridge banners immediately
+    instead of only ever learning about them from a live `state` frame it
+    may have missed while disconnected (finding).
+
+    Args:
+        app_state: The FastAPI app's `state`. `simulation`/`budget_guard`
+            are read via `getattr` because both are optional: the pre-#13
+            bare-`WorldState` skeleton some tests still exercise has
+            neither wired.
+        state: Current world state, forwarded to `snapshot()`.
+
+    Returns:
+        The `{"t": "snapshot", ...}` payload, extended with `fog`/
+        `hard_stop`/`low_power` keys whenever a simulation/budget guard
+        is actually wired.
+    """
+    payload = snapshot(state)
+    simulation = getattr(app_state, "simulation", None)
+    if simulation is not None:
+        payload["fog"] = {
+            "active": simulation.fog_active,
+            "status": simulation.fog_status,
+        }
+        payload["hard_stop"] = simulation.hard_stop
+    budget_guard = getattr(app_state, "budget_guard", None)
+    if budget_guard is not None:
+        payload["low_power"] = budget_guard.low_power
+    return payload
 
 
 async def _serve(websocket: WebSocket, queue: asyncio.Queue[dict[str, Any]]) -> None:

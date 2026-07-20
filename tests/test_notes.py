@@ -185,3 +185,28 @@ class TestDispatchNoteCall:
             dispatch_note_call(store, name, {"note_id": note_id})
 
         assert store.read(note_id) is not None
+
+    @pytest.mark.parametrize(
+        ("name", "arguments"),
+        [
+            ("create", {}),
+            ("create", {"title": "Tide Patterns"}),  # missing content_markdown
+            ("append", {}),
+            ("read", {}),
+            ("search", {}),
+        ],
+    )
+    def test_missing_required_argument_is_rejected_not_a_key_error(
+        self, tmp_path: Path, name: str, arguments: dict[str, object]
+    ) -> None:
+        """A malformed/empty tool-call payload must degrade gracefully.
+
+        `_extract_tool_calls` defaults unparsable tool-call JSON to `{}`
+        (llm/client.py); dispatching that used to raise a bare KeyError
+        that crashed the whole Mate chat turn instead of being reported
+        like every other rejected operation.
+        """
+        store = make_store(tmp_path)
+
+        with pytest.raises(NoteOperationRejectedError):
+            dispatch_note_call(store, name, arguments)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -12,11 +13,17 @@ from fastapi.testclient import TestClient
 from peerport.config import Config, WorldConfig
 from peerport.db import open_db
 from peerport.llm.budget import BudgetGuard
-from peerport.llm.client import LLMClient, ToolCall, TransportReply
-from peerport.mate.chat import KEEPER_BIAS, MateChat
+from peerport.llm.client import (
+    LLMClient,
+    ToolCall,
+    TransportReply,
+    TransportUnavailableError,
+)
+from peerport.mate.chat import DEFAULT_FALLBACK_TEXT, KEEPER_BIAS, MateChat
 from peerport.mate.notes import NotesStore
 from peerport.memory.stream import MemoryStream
 from peerport.server.app import create_app
+from tests.test_converse import FakeBroadcaster
 from tests.test_llm_client import FakeTransport
 from tests.test_memory import FakeEmbedder
 
@@ -169,6 +176,39 @@ class TestChatEndToEnd:
 
         importance = conn.execute("SELECT importance FROM memories").fetchone()[0]
         assert importance == 10
+
+    def test_keeper_bias_does_not_bleed_onto_unrelated_pending_memory(
+        self, conn: sqlite3.Connection
+    ) -> None:
+        """Finding: the +2 Keeper bias used to score the Mate's whole batch.
+
+        It scored the Mate's *whole* pending batch, not just the row
+        just written for this exchange. The Mate is itself a map peer
+        that can hold ordinary
+        peer-to-peer conversations (converse.py); an unrelated pending
+        memory from one of those must stay untouched by a later Keeper
+        exchange's scoring call.
+        """
+        conn.execute(
+            "INSERT INTO memories (peer_id, ts_world, ts_real, kind, text)"
+            " VALUES ('beacon', 0, 0, 'conversation', 'unrelated peer chat')"
+        )
+        conn.commit()
+        transport = FakeStreamingTransport(
+            replies=[
+                TransportReply(text=""),  # note-tool round: no tool call
+                TransportReply(text="Keeper checked in about the harbor."),
+                TransportReply(text='{"scores": [7]}'),
+            ]
+        )
+        app = create_app(Config(world=WorldConfig(tick_ms=60000)))
+        with TestClient(app) as client:
+            app.state.mate_chat = make_chat(conn, app.state.broadcaster, transport)
+            client.post("/api/chat", json={"text": "hello beacon"})
+
+        rows = dict(conn.execute("SELECT text, importance FROM memories").fetchall())
+        assert rows["Keeper checked in about the harbor."] == 7 + KEEPER_BIAS
+        assert rows["unrelated peer chat"] is None
 
     def test_chat_uses_mate_model_and_summary_uses_background(
         self, conn: sqlite3.Connection
@@ -359,3 +399,170 @@ class TestNoteToolDispatch:
 
         assert response.status_code == 200
         assert chat.notes.list_notes() == []
+
+
+class TestErrorHandling:
+    """Finding: handle() had no try/except around its LLM calls.
+
+    Before the fix, a `BudgetExceededError`/`LLMCallError` from the
+    note-tool round or the streamed reply propagated straight out of
+    `handle()` -- a bare 500 from `/api/chat`, with the "search" flavor
+    event (if already sent) leaving the frontend hung with no
+    `chat_done` ever following.
+    """
+
+    @pytest.mark.anyio
+    async def test_note_tool_llm_call_error_still_publishes_chat_done(
+        self, conn: sqlite3.Connection
+    ) -> None:
+        # BACKOFF_DELAYS has 3 entries, so 4 consecutive transport
+        # failures exhaust the note-tool round's retry budget and raise
+        # LLMCallError before the streamed reply is ever attempted.
+        transport = FakeStreamingTransport(
+            replies=[TransportUnavailableError("down")] * 4
+        )
+        broadcaster = FakeBroadcaster()
+        chat = make_chat(conn, broadcaster, transport)  # type: ignore[arg-type]
+
+        await chat.handle("hello")
+
+        done = [f for f in broadcaster.frames if f["t"] == "chat_done"]
+        assert len(done) == 1
+        assert done[0]["text"] == DEFAULT_FALLBACK_TEXT
+        assert done[0]["filed_note_title"] is None
+        assert not any(f["t"] == "chat_delta" for f in broadcaster.frames)
+
+    @pytest.mark.anyio
+    async def test_hard_cap_reached_still_publishes_chat_done(
+        self, conn: sqlite3.Connection
+    ) -> None:
+        transport = FakeStreamingTransport()
+        broadcaster = FakeBroadcaster()
+        chat = make_chat(conn, broadcaster, transport)  # type: ignore[arg-type]
+        chat.llm.budget.hard_cap_usd = 0.0  # today's $0.00 spend already meets it
+
+        await chat.handle("hello")
+
+        done = [f for f in broadcaster.frames if f["t"] == "chat_done"]
+        assert len(done) == 1
+        assert done[0]["text"] == DEFAULT_FALLBACK_TEXT
+        assert transport.calls == []
+        assert transport.stream_calls == []
+
+    @pytest.mark.anyio
+    async def test_fallback_text_uses_the_locale_catalog(
+        self, conn: sqlite3.Connection
+    ) -> None:
+        transport = FakeStreamingTransport()
+        broadcaster = FakeBroadcaster()
+        chat = make_chat(conn, broadcaster, transport)  # type: ignore[arg-type]
+        chat.locale = "ja"
+        chat.llm.budget.hard_cap_usd = 0.0
+
+        await chat.handle("hello")
+
+        done = next(f for f in broadcaster.frames if f["t"] == "chat_done")
+        assert (
+            done["text"]
+            == "返事が届く前に信号が途切れた。少し待ってからもう一度試して。"
+        )
+
+
+class TestConcurrency:
+    """Finding: no lock serializes overlapping /api/chat requests.
+
+    Without a lock, two concurrent `handle()` calls would both publish
+    chat_delta/chat_done frames onto the same broadcaster with nothing
+    to demux by, interleaving two Mate replies into one garbled stream.
+    """
+
+    @pytest.mark.anyio
+    async def test_overlapping_handle_calls_run_one_at_a_time(
+        self, conn: sqlite3.Connection
+    ) -> None:
+        order: list[str] = []
+        gate = asyncio.Event()
+
+        class BlockingStreamingTransport(FakeStreamingTransport):
+            async def complete(
+                self,
+                *,
+                model: str,
+                prompt: str,
+                schema: dict[str, object] | None,
+                max_output_tokens: int,
+                tools: list[dict[str, object]] | None = None,
+            ) -> TransportReply:
+                order.append("note_tool")
+                return await super().complete(
+                    model=model,
+                    prompt=prompt,
+                    schema=schema,
+                    max_output_tokens=max_output_tokens,
+                    tools=tools,
+                )
+
+            async def stream_complete(
+                self,
+                *,
+                model: str,
+                prompt: str,
+                max_output_tokens: int,
+                on_delta: Callable[[str], object],
+                tools: list[dict[str, object]] | None = None,
+            ) -> TransportReply:
+                del model, prompt, max_output_tokens, tools
+                first_stream = order.count("stream_start") == 0
+                order.append("stream_start")
+                if first_stream:
+                    await gate.wait()
+                result = on_delta("reply")
+                if hasattr(result, "__await__"):
+                    await result
+                order.append("stream_end")
+                return TransportReply(text="reply")
+
+        # Each handle() makes 3 non-streaming `complete()` calls: the
+        # note-tool round, the summary, and the importance-score batch.
+        transport = BlockingStreamingTransport(
+            replies=[
+                TransportReply(text=""),  # 1st call's note-tool round
+                TransportReply(text="summary one"),  # 1st call's summarize
+                TransportReply(text='{"scores": [5]}'),  # 1st call's score
+                TransportReply(text=""),  # 2nd call's note-tool round
+                TransportReply(text="summary two"),  # 2nd call's summarize
+                TransportReply(text='{"scores": [5]}'),  # 2nd call's score
+            ]
+        )
+        broadcaster = FakeBroadcaster()
+        chat = make_chat(conn, broadcaster, transport)  # type: ignore[arg-type]
+
+        first = asyncio.ensure_future(chat.handle("first"))
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        # The first call is now parked at `gate.wait()` inside its
+        # streamed reply; the second must not start any work at all
+        # (not even its note-tool round) while the lock is held.
+        second = asyncio.ensure_future(chat.handle("second"))
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert order == ["note_tool", "stream_start"]
+
+        gate.set()
+        await asyncio.gather(first, second)
+
+        # Each handle() contributes note_tool, stream_start, stream_end,
+        # then two more complete() calls (summarize + score) -- all
+        # fully finishing for "first" before any of "second"'s begin.
+        assert order == [
+            "note_tool",
+            "stream_start",
+            "stream_end",
+            "note_tool",
+            "note_tool",
+            "note_tool",
+            "stream_start",
+            "stream_end",
+            "note_tool",
+            "note_tool",
+        ]

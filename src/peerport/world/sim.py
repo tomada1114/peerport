@@ -73,6 +73,15 @@ class Simulation:
         self.state.broadcast_seconds = initial_world_seconds
         self.paused = False
         self.speed = 1
+        # Degraded-state flags (#27/finding): mirrored here (rather than
+        # only living transiently inside the fire-and-forget broadcast
+        # callbacks in `__main__.py`) so a reconnecting client's snapshot
+        # can resync the fog/hard-stop banners instead of only ever
+        # learning about them from a live `state` frame it may have
+        # missed while disconnected.
+        self.hard_stop = False
+        self.fog_active = False
+        self.fog_status: int | None = None
         self.peers: dict[str, SimPeer] = {}
         self._drifter_id = next(
             (p.id for p in personas.values() if p.kind == DRIFTER_KIND), None
@@ -124,12 +133,16 @@ class Simulation:
     def assign_destination(self, peer_id: str, node: str) -> None:
         """Send a peer toward a waypoint node (used by tests and #19).
 
-        A peer with no reachable path stays put and is flagged for
-        re-decision, per requirements.md §4.1's blocked-path edge case.
+        A peer with no reachable path, or already standing on *node*'s
+        tile (a length-1 path), stays put and is flagged for
+        re-decision -- mirroring `_decide()`'s own exclusion of
+        same-tile candidates, so a peer routed to where it already is
+        doesn't get stuck with `needs_decision` frozen `False` forever
+        (per requirements.md §4.1's blocked-path edge case).
         """
         peer = self.peers[peer_id]
         path = self.worldmap.path_to_node(peer.tile, node, peer.kind)
-        if path is None:
+        if path is None or len(path) <= 1:
             peer.needs_decision = True
             return
         peer.destination = node

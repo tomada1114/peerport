@@ -226,7 +226,11 @@ body {
   max-width: 85%;
   padding: 8px 10px;
   border-radius: 4px;
-  font-size: 13px;
+  /* Body baseline per prototype-design.md §2.4 (ja-comfortable): 15px /
+     line-height 1.7, for anything read for minutes (chat, mail, notes,
+     BBS, logbook) -- not the smaller sizes reserved for chrome. */
+  font-size: 15px;
+  line-height: 1.7;
   white-space: pre-wrap;
 }
 
@@ -274,6 +278,12 @@ body {
   border: 1px solid var(--tide-line);
   border-radius: 4px;
   padding: 8px;
+}
+
+.board-post p {
+  /* Body baseline per prototype-design.md §2.4 (ja-comfortable). */
+  font-size: 15px;
+  line-height: 1.7;
 }
 
 .author-chip {
@@ -327,7 +337,9 @@ body {
   border-radius: 4px;
   padding: 8px;
   margin: 0;
-  font-size: 13px;
+  /* Body baseline per prototype-design.md §2.4 (ja-comfortable). */
+  font-size: 15px;
+  line-height: 1.7;
 }
 
 .logbook-day h5 {
@@ -384,7 +396,9 @@ body {
 }
 
 .mail-detail p {
-  font-size: 13px;
+  /* Body baseline per prototype-design.md §2.4 (ja-comfortable). */
+  font-size: 15px;
+  line-height: 1.7;
   white-space: pre-wrap;
 }
 
@@ -440,7 +454,9 @@ body {
 }
 
 .notes-content {
-  font-size: 13px;
+  /* Body baseline per prototype-design.md §2.4 (ja-comfortable). */
+  font-size: 15px;
+  line-height: 1.7;
   white-space: pre-wrap;
   font-family: inherit;
 }

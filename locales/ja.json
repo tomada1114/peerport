@@ -21,6 +21,7 @@
   "mate.empty": "Mateとの回線は開いている。まずは挨拶から。",
   "mate.filed_note": "ノートに保管 → 「{title}」",
   "mate.searching": "調べにシグナルタワーへ向かった…",
+  "mate.error": "返事が届く前に信号が途切れた。少し待ってからもう一度試して。",
 
   "mail.empty": "まだ手紙はない。港の外からの便りには時間がかかる。",
   "mail.reply.placeholder": "返事を書く…",
@@ -34,6 +35,7 @@
   "logbook.empty": "ログブックは今日から始まる。この港の物語の1ページ目。",
   "logbook.while_away": "留守の間に",
   "logbook.chronicle": "港の年代記",
+  "logbook.digest_opening": "おかえりなさい。留守の間に…",
 
   "notes.empty": "棚はまだ空っぽ。最初のノートは{mate}に頼んでみよう。",
   "notes.filed_by": "{mate}が保管",
@@ -48,6 +50,8 @@
   "state.paused": "世界は一時停止中。",
 
   "onboarding.locale.title": "言語を選んでください",
+  "onboarding.locale.en": "English",
+  "onboarding.locale.ja": "日本語",
   "onboarding.keeper_name.title": "この港には灯台守が要る。あなたの名前は？",
   "onboarding.api_key.title": "OpenAI APIキーを設定してください",
 

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,6 +20,8 @@ from peerport.memory.reflect import (
     REFLECTION_INSTRUCTIONS,
     UNREFLECTED_THRESHOLD,
     ReflectionEngine,
+    run_forgetting_loop,
+    run_reflection_loop,
 )
 from peerport.memory.stream import MemoryStream
 from peerport.peers.personas import load_personas
@@ -27,7 +31,7 @@ from tests.test_memory import FakeEmbedder, make_llm
 
 if TYPE_CHECKING:
     import sqlite3
-    from collections.abc import Callable, Iterator
+    from collections.abc import Awaitable, Callable, Iterator
 
 REPO_ROOT = Path(__file__).parent.parent
 
@@ -248,6 +252,40 @@ class TestReflectionRun:
         assert len(transport.calls) == 1
 
 
+class TestReflectionMissingPersona:
+    """Finding: `_reflect`'s persona lookup was unguarded.
+
+    Unlike the identical lookup in `_summarize_cluster` (which uses
+    `.get()` with a fallback), a peer_id with no registered persona
+    must degrade to a skip, not a bare KeyError that could kill the
+    whole reflection loop.
+    """
+
+    @pytest.mark.anyio
+    async def test_missing_persona_skips_without_raising(
+        self, conn: sqlite3.Connection
+    ) -> None:
+        seed_memory(conn, SeedMemory(peer_id="ghost", reflected=0))
+        transport = FakeTransport([insights_reply(2)])
+        engine = make_engine(conn, transport, lambda: NIGHT_BAND_TS)
+        assert "ghost" not in engine.personas
+
+        # maybe_reflect() only reports whether a run was *attempted*
+        # (True), not whether it produced anything -- the meaningful
+        # assertion is that nothing crashed and no call/rows resulted.
+        fired = await engine.maybe_reflect("ghost")
+
+        assert fired is True
+        assert transport.calls == []
+        rows = conn.execute(
+            "SELECT COUNT(*) FROM memories WHERE peer_id = 'ghost' AND kind = 'reflection'"
+        ).fetchone()[0]
+        assert rows == 0
+        # The memory stays unreflected/pending so a later fix (correct
+        # personas on restart) can still pick it up.
+        assert engine.unreflected_count("ghost") == 1
+
+
 class TestInsightCountBoundaries:
     @pytest.mark.anyio
     async def test_four_insights_truncated_to_three(
@@ -349,6 +387,38 @@ class TestForgettingCluster:
         assert expected_removed.isdisjoint(remaining_ids)
         assert set(forgettable_ids[FORGET_CLUSTER_SIZE:]).issubset(remaining_ids)
 
+    @pytest.mark.anyio
+    async def test_unscored_null_importance_rows_are_never_folded_away(
+        self, conn: sqlite3.Connection
+    ) -> None:
+        """Finding: SQLite sorts NULL before every non-NULL value ascending.
+
+        Without excluding `importance IS NULL`, still-pending rows (the
+        oldest of all, here) would always be picked over already-scored
+        rows with a genuinely low importance, contradicting "lowest
+        importance" -- an unscored row could be anything once scored.
+        """
+        pending_ids = [
+            seed_memory(conn, SeedMemory(peer_id="mia", ts_world=i, importance=None))
+            for i in range(50)
+        ]
+        for i in range(2000):
+            seed_memory(
+                conn, SeedMemory(peer_id="mia", ts_world=1000 + i, importance=5)
+            )
+        transport = FakeTransport([summary_reply()])
+        engine = make_engine(conn, transport, lambda: 0)
+
+        assert await engine.forget_once("mia") is True
+
+        remaining_ids = {
+            row[0]
+            for row in conn.execute(
+                "SELECT id FROM memories WHERE peer_id = 'mia' AND kind != 'reflection'"
+            ).fetchall()
+        }
+        assert set(pending_ids).issubset(remaining_ids)
+
 
 class TestForgettingWriteThenDelete:
     @pytest.mark.anyio
@@ -418,3 +488,81 @@ class TestForgettingDefersToNextTick:
             "SELECT COUNT(*) FROM memories WHERE peer_id = 'tug'"
         ).fetchone()[0]
         assert count_after_second == count_after_first - FORGET_CLUSTER_SIZE + 1
+
+
+class TestDriverLoopResilience:
+    """Finding: one bad peer_id used to kill reflection/forgetting forever.
+
+    `run_reflection_loop`/`run_forgetting_loop` had no per-iteration
+    exception handling, so an unguarded error for a single peer (e.g. a
+    stale/removed persona) silently stopped the whole background task
+    for every peer, not just the offending one.
+    """
+
+    @pytest.mark.anyio
+    async def test_reflection_loop_survives_one_bad_peer(
+        self,
+        conn: sqlite3.Connection,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        engine = make_engine(conn, FakeTransport(), lambda: 0)
+        calls: list[str] = []
+
+        async def flaky_maybe_reflect(self: ReflectionEngine, peer_id: str) -> bool:
+            del self
+            calls.append(peer_id)
+            if peer_id == "bad":
+                message = "boom"
+                raise RuntimeError(message)
+            return False
+
+        monkeypatch.setattr(ReflectionEngine, "maybe_reflect", flaky_maybe_reflect)
+        real_sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
+
+        async def fast_sleep(_seconds: float) -> None:
+            await real_sleep(0)
+
+        monkeypatch.setattr(asyncio, "sleep", fast_sleep)
+
+        task = asyncio.ensure_future(run_reflection_loop(engine, ["bad", "good"]))
+        for _ in range(5):
+            await asyncio.sleep(0)
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+        assert "good" in calls  # the loop kept going past "bad"'s failure
+
+    @pytest.mark.anyio
+    async def test_forgetting_loop_survives_one_bad_peer(
+        self,
+        conn: sqlite3.Connection,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        engine = make_engine(conn, FakeTransport(), lambda: 0)
+        calls: list[str] = []
+
+        async def flaky_forget_once(self: ReflectionEngine, peer_id: str) -> bool:
+            del self
+            calls.append(peer_id)
+            if peer_id == "bad":
+                message = "boom"
+                raise RuntimeError(message)
+            return False
+
+        monkeypatch.setattr(ReflectionEngine, "forget_once", flaky_forget_once)
+        real_sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
+
+        async def fast_sleep(_seconds: float) -> None:
+            await real_sleep(0)
+
+        monkeypatch.setattr(asyncio, "sleep", fast_sleep)
+
+        task = asyncio.ensure_future(run_forgetting_loop(engine, ["bad", "good"]))
+        for _ in range(5):
+            await asyncio.sleep(0)
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+        assert "good" in calls  # the loop kept going past "bad"'s failure

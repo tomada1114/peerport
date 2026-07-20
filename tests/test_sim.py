@@ -113,6 +113,41 @@ class TestBlockedPath:
         assert sim.peers["bell"].destination != "dock_square"
 
 
+class TestSameTileDestination:
+    """A peer already standing on the requested node's tile (finding).
+
+    Before the fix, `assign_destination()` accepted the resulting
+    length-1 path and froze `needs_decision` at `False` forever -- the
+    peer never got a chance to wander again via the internal fallback.
+    """
+
+    def test_assign_destination_to_current_tile_flags_re_decision(
+        self, sim: Simulation
+    ) -> None:
+        peer = sim.peers["tug"]
+        node = "berth_tug"
+        peer.tile = sim.worldmap.standable_tile(node, peer.kind)
+        peer.needs_decision = False
+
+        sim.assign_destination("tug", node)
+
+        assert peer.needs_decision
+
+    def test_peer_already_there_resumes_wander_on_the_next_tick(
+        self, sim: Simulation
+    ) -> None:
+        peer = sim.peers["tug"]
+        node = "berth_tug"
+        peer.tile = sim.worldmap.standable_tile(node, peer.kind)
+
+        sim.assign_destination("tug", node)
+        sim.tick(TICK_MS)  # _step_movement re-runs _decide() since flagged
+
+        # The internal wander fallback found a genuine (>1-tile) path
+        # instead of staying frozen with an empty one forever.
+        assert len(peer.path) > 1
+
+
 class TestRandomWander:
     def test_peers_pick_destinations_and_move_on_their_own(
         self, sim: Simulation

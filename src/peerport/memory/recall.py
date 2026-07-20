@@ -66,7 +66,11 @@ async def retrieve(
     try:
         query_vector = await stream.embedder.embed(query)
     except Exception:
-        logger.warning("query embedding failed; falling back to 2-axis retrieval")
+        # Broad by design (degrade-to-2-axis is a sanctioned boundary,
+        # see module docstring) -- but logger.exception keeps the
+        # traceback so a real bug isn't indistinguishable from a
+        # transient embedding-API outage in the logs.
+        logger.exception("query embedding failed; falling back to 2-axis retrieval")
 
     rows = stream.conn.execute(
         "SELECT id, ts_world, kind, text, importance, embedding"

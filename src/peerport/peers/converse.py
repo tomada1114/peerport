@@ -64,6 +64,7 @@ class ConversationEngine:
     personas: Mapping[str, Persona]
     on_peer_event: Callable[[str], Awaitable[None]] | None = None
     busy: set[str] = field(default_factory=set)
+    locale: str = "en"
 
     def eligible(self, a: str, b: str) -> bool:
         """Rule-based `talk` eligibility: proximity ≤ 2 tiles, both free."""
@@ -114,7 +115,8 @@ class ConversationEngine:
             result = await self.llm.call(
                 role="background",
                 prompt=PromptParts(
-                    build_fixed_prefix(self.personas[speaker].body, "en"), variable
+                    build_fixed_prefix(self.personas[speaker].body, self.locale),
+                    variable,
                 ),
                 schema=ConversationTurn,
                 purpose="converse",
@@ -149,7 +151,7 @@ class ConversationEngine:
         result = await self.llm.call(
             role="background",
             prompt=PromptParts(
-                build_fixed_prefix(self.personas[a].body, "en"),
+                build_fixed_prefix(self.personas[a].body, self.locale),
                 "Summarize this conversation in 1-2 sentences, judge how it"
                 " changed the relationship as an integer delta (-10..10), and"
                 f" give a fresh short relationship label.\n\n{transcript}",

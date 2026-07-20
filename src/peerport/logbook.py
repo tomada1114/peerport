@@ -23,6 +23,7 @@ import logging
 import math
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from peerport.db import (
@@ -39,6 +40,7 @@ from peerport.db import (
 from peerport.llm.client import PromptParts
 from peerport.llm.prompts import WORLD_RULES, LogbookEvent, LogbookEvents
 from peerport.peers.converse import SCORE_MAX, SCORE_MIN
+from peerport.peers.personas import MAP_KINDS
 
 if TYPE_CHECKING:
     import sqlite3
@@ -70,7 +72,8 @@ WEEKLY_SUMMARY_INTERVAL_DAYS = 7
 WEEKLY_SUMMARY_DAY_KEY = "logbook_weekly_summary_last_day"
 LOGBOOK_RELATIONSHIP_DELTA = 2
 MULTI_PEER_EVENT_THRESHOLD = 2
-DIGEST_OPENING = "Welcome back. While you were away..."
+DIGEST_OPENING_KEY = "logbook.digest_opening"
+DEFAULT_DIGEST_OPENING = "Welcome back. While you were away..."
 
 GENERATE_INSTRUCTIONS = (
     "Generate exactly {count} short third-person events that happened in "
@@ -94,6 +97,22 @@ def event_count_for_minutes(minutes_away: float) -> int:
     return max(MIN_EVENTS, min(MAX_EVENTS, raw))
 
 
+def _digest_opening(locale: str) -> str:
+    """The localized "While you were away..." digest opener.
+
+    Read fresh from the locale catalog (not cached, mirrors
+    `mate.chat._fallback_text`) so a missing/renamed key or catalog file
+    degrades to `DEFAULT_DIGEST_OPENING` instead of raising.
+    """
+    catalog_path = Path("locales") / f"{locale}.json"
+    try:
+        catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return DEFAULT_DIGEST_OPENING
+    text = catalog.get(DIGEST_OPENING_KEY)
+    return text if isinstance(text, str) else DEFAULT_DIGEST_OPENING
+
+
 @dataclass(slots=True)
 class LogbookService:
     """Generates absence reports/weekly summaries and reads the Logbook."""
@@ -106,6 +125,21 @@ class LogbookService:
     clock: WorldClock
     now_world: Callable[[], int]
     now_real: Callable[[], float] = field(default=time.time)
+    locale: str = "en"
+
+    def _map_peer_ids(self) -> list[str]:
+        """Ids of map-eligible personas only (excludes `kind="friend"`).
+
+        Friend personas (Kai, Mia) never appear on the map (requirements
+        §4.6); a generated absence/weekly event may not reference them,
+        so both the prompt's "known peers" list and validation must use
+        this narrower set instead of the full persona registry.
+        """
+        return sorted(
+            peer_id
+            for peer_id, persona in self.personas.items()
+            if persona.kind in MAP_KINDS
+        )
 
     async def maybe_generate_absence_report(self) -> list[LogbookEvent]:
         """Generate the absence report when the elapsed real time qualifies.
@@ -125,7 +159,7 @@ class LogbookService:
         instructions = GENERATE_INSTRUCTIONS.format(
             count=count,
             minutes=minutes_away,
-            peer_ids=", ".join(sorted(self.personas)),
+            peer_ids=", ".join(self._map_peer_ids()),
             locations=", ".join(sorted(self.locations)),
         )
         variable = f"{instructions}\n\nPeer status before the absence:\n{self._peer_status_summary()}"
@@ -153,7 +187,7 @@ class LogbookService:
         if current_day - last_day < WEEKLY_SUMMARY_INTERVAL_DAYS:
             return []
         instructions = WEEKLY_INSTRUCTIONS.format(
-            peer_ids=", ".join(sorted(self.personas)),
+            peer_ids=", ".join(self._map_peer_ids()),
             locations=", ".join(sorted(self.locations)),
         )
         variable = f"{instructions}\n\nPeer status:\n{self._peer_status_summary()}"
@@ -167,7 +201,7 @@ class LogbookService:
         if not events:
             return ""
         narration = " ".join(event.text for event in events)
-        return f"{DIGEST_OPENING} {narration}"
+        return f"{_digest_opening(self.locale)} {narration}"
 
     def read_logbook(self) -> dict[str, object]:
         """The Logbook tab's backing data: latest digest + full chronicle."""
@@ -191,10 +225,21 @@ class LogbookService:
         ]
         return {"while_away": while_away, "chronicle": chronicle}
 
+    def _fixed_prefix(self) -> str:
+        """The locale-tagged fixed prefix for generation calls.
+
+        `WORLD_RULES` itself must stay a byte-stable, frozen constant
+        (llm/prompts.py), so the locale line is appended here rather
+        than interpolated into it — otherwise the model is never told
+        what language to narrate in and defaults to English regardless
+        of `config.locale` (finding).
+        """
+        return f"{WORLD_RULES}\n\nLocale: {self.locale}\n"
+
     async def _generate(self, variable: str) -> list[LogbookEvent]:
         result = await self.llm.call(
             role="background",
-            prompt=PromptParts(WORLD_RULES, variable),
+            prompt=PromptParts(self._fixed_prefix(), variable),
             schema=LogbookEvents,
             purpose="logbook",
         )
@@ -203,7 +248,7 @@ class LogbookService:
         return self._filter_valid(result.parsed.events)
 
     def _filter_valid(self, events: list[LogbookEvent]) -> list[LogbookEvent]:
-        valid_ids = set(self.personas)
+        valid_ids = set(self._map_peer_ids())
         accepted = [
             event
             for event in events
@@ -251,7 +296,7 @@ class LogbookService:
 
     def _peer_status_summary(self) -> str:
         lines = []
-        for peer_id in sorted(self.personas):
+        for peer_id in self._map_peer_ids():
             row = self.conn.execute(
                 "SELECT text FROM memories WHERE peer_id = ? ORDER BY id DESC LIMIT 1",
                 (peer_id,),

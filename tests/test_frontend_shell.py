@@ -76,6 +76,24 @@ class TestDesignTokens:
         for token, value in DESIGN_TOKENS.items():
             assert f"{token}: {value}" in css, f"missing {token}: {value}"
 
+    def test_bridge_css_applies_the_body_baseline_to_long_form_text(self) -> None:
+        """15px / line-height 1.7 (ja-comfortable) body baseline.
+
+        Per prototype-design.md §2.4, this applies to anything read for
+        minutes -- chat, mail, notes, BBS, logbook.
+        """
+        css = (STATIC / "css" / "bridge.css").read_text()
+        for selector in (
+            ".chat-bubble",
+            ".mail-detail p",
+            ".notes-content",
+            ".logbook-entry",
+            ".board-post p",
+        ):
+            block = css.split(f"{selector} {{", 1)[1].split("}", 1)[0]
+            assert "font-size: 15px;" in block, f"{selector} missing 15px baseline"
+            assert "line-height: 1.7;" in block, f"{selector} missing 1.7 line-height"
+
 
 class TestI18nDiscipline:
     def test_bridge_js_has_no_hardcoded_english_ui_literals(self) -> None:
@@ -94,6 +112,23 @@ class TestI18nDiscipline:
         for key in ("logbook.empty", "logbook.while_away", "logbook.chronicle"):
             assert key in source, f"bridge.js never references catalog key {key}"
 
+    def test_bridge_js_hud_clock_uses_the_dedicated_world_date_key(self) -> None:
+        """prototype-design.md §8.4: world-dates are "Day 12, Dusk"/「12日目・夕」.
+
+        `_refreshHud()` must resolve through `date.world_day` (finding)
+        rather than hand-assembling the label with a hardcoded separator.
+        """
+        source = (STATIC / "js" / "bridge.js").read_text()
+        assert 't("date.world_day", {' in source
+
+    def test_bridge_js_resolves_onboarding_locale_labels_via_catalog(self) -> None:
+        """Locale-picker labels must not bypass the catalog (finding)."""
+        source = (STATIC / "js" / "bridge.js").read_text()
+        assert "onboarding.locale.${loc}" in source
+        for locale in ("en", "ja"):
+            catalog = json.loads((REPO_ROOT / "locales" / f"{locale}.json").read_text())
+            assert catalog[f"onboarding.locale.{locale}"]
+
     def test_locale_catalogs_have_identical_key_sets(self) -> None:
         en = json.loads((REPO_ROOT / "locales" / "en.json").read_text())
         ja = json.loads((REPO_ROOT / "locales" / "ja.json").read_text())
@@ -103,6 +138,24 @@ class TestI18nDiscipline:
         source = (STATIC / "js" / "i18n.js").read_text()
         assert "en" in source
         assert "fallback" in source.lower()
+
+
+class TestChatStreamResetOnDisconnect:
+    """A dropped WS mid-stream must not splice into the next reply (finding).
+
+    `chat_done` for an in-flight response never arrives once the socket
+    drops, so `streamingBubble` has to be cleared right away rather than
+    staying a stale reference the next `chat_delta` stream appends onto.
+    """
+
+    def test_bridge_js_defines_a_streaming_chat_reset(self) -> None:
+        source = (STATIC / "js" / "bridge.js").read_text()
+        assert "resetStreamingChat() {" in source
+        assert "this.streamingBubble = null;" in source
+
+    def test_index_resets_streaming_chat_on_disconnect(self) -> None:
+        html = (STATIC / "index.html").read_text()
+        assert "bridge.resetStreamingChat()" in html
 
 
 class TestRendererContract:
@@ -116,6 +169,18 @@ class TestRendererContract:
         source = (STATIC / "js" / "world.js").read_text()
         assert "peer-selected" in source
         assert "signal-tower" in source
+
+    def test_world_js_tint_crossfade_snaps_instantly_under_reduced_motion(
+        self,
+    ) -> None:
+        """prototype-design.md §8.3: reduced motion -> tint crossfades instant."""
+        source = (STATIC / "js" / "world.js").read_text()
+        assert "this.tint.alpha = this.tintTo.alpha;" in source
+
+    def test_world_js_speech_bubble_skips_pop_in_under_reduced_motion(self) -> None:
+        """prototype-design.md §8.3: reduced motion -> bubbles/idle anims static."""
+        source = (STATIC / "js" / "world.js").read_text()
+        assert source.count("reducedMotion") >= 6
 
 
 class TestClientApis:
@@ -265,6 +330,28 @@ class TestDegradedStatesFrontend:
     def test_world_js_applies_state_frames(self) -> None:
         source = (STATIC / "js" / "world.js").read_text()
         assert "applyStateFrame(frame)" in source
+
+    def test_index_resyncs_degraded_state_from_every_snapshot(self) -> None:
+        """A reconnecting client resyncs fog/hard-stop/low-power (finding).
+
+        The snapshot is the guaranteed first message on every (re)connect
+        (net.js), so `onSnapshot` must feed it to both renderers instead
+        of only ever reacting to a live `state` frame that may have been
+        missed while disconnected.
+        """
+        html = (STATIC / "index.html").read_text()
+        assert "world.applyDegradedSnapshot(frame)" in html
+        assert "bridge.applyDegradedSnapshot(frame)" in html
+
+    def test_bridge_js_applies_degraded_snapshot_via_existing_handlers(self) -> None:
+        source = (STATIC / "js" / "bridge.js").read_text()
+        assert "applyDegradedSnapshot(frame)" in source
+        assert "frame.fog" in source
+        assert "frame.hard_stop" in source
+
+    def test_world_js_applies_degraded_snapshot_via_existing_handlers(self) -> None:
+        source = (STATIC / "js" / "world.js").read_text()
+        assert "applyDegradedSnapshot(frame)" in source
 
     def test_no_blocking_modal_introduced_for_degraded_states(self) -> None:
         """REQ-009: the harbor stays visible — never a blocking modal.

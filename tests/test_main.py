@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import random
 import shutil
 import time
 from pathlib import Path
@@ -12,13 +13,20 @@ import pytest
 from fastapi import FastAPI
 
 from peerport.__main__ import (
+    WireContext,
+    _wire_peer_society,
     boot,
     main,
     make_hard_cap_handler,
     make_outage_handler,
     parse_args,
 )
+from peerport.config import Config
 from peerport.db import open_db
+from peerport.llm.outage import OutageTracker
+from peerport.peers.personas import load_personas
+from peerport.world.sim import Simulation
+from peerport.world.worldmap import WorldMap
 from tests.test_converse import FakeBroadcaster
 
 REPO_ROOT = Path(__file__).parent.parent
@@ -283,6 +291,44 @@ class TestMain:
         assert row is not None
         assert before <= int(row[0]) <= after
 
+    @pytest.mark.usefixtures("world_files")
+    def test_uvicorn_run_exception_still_persists_world_state(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A crash inside uvicorn.run() must not lose world state (finding).
+
+        Before the fix, save_world_seconds/save_last_shutdown_ts_real
+        only ran after uvicorn.run() returned normally, so a startup
+        exception (e.g. the configured port already in use) silently
+        dropped however much world time had accrued.
+        """
+
+        def _raise_run(app: object, **kwargs: object) -> None:
+            message = "port already in use"
+            raise OSError(message)
+
+        monkeypatch.setattr("peerport.__main__.uvicorn.run", _raise_run)
+        monkeypatch.chdir(tmp_path)
+
+        before = int(time.time())
+        with pytest.raises(OSError, match="port already in use"):
+            main([])
+        after = int(time.time())
+
+        conn = open_db(tmp_path / "data" / "peerport.db")
+        try:
+            world_seconds_row = conn.execute(
+                "SELECT value FROM world_state WHERE key = 'world_seconds'"
+            ).fetchone()
+            shutdown_row = conn.execute(
+                "SELECT value FROM world_state WHERE key = 'last_shutdown_ts_real'"
+            ).fetchone()
+        finally:
+            conn.close()
+        assert world_seconds_row is not None
+        assert shutdown_row is not None
+        assert before <= int(shutdown_row[0]) <= after
+
 
 class TestDegradedStateWiring:
     """#27: the shared outage tracker and hard-cap signal.
@@ -460,3 +506,104 @@ class TestReflectionWiring:
         exit_code = main([])
 
         assert exit_code == 0
+
+
+class TestMemoryScoringWiring:
+    """Finding: nothing ever scheduled periodic importance scoring.
+
+    Reuses the same `_wire_mate_chat`/`_wire_peer_society` stubbing as
+    `TestReflectionWiring` above.
+    """
+
+    @pytest.mark.usefixtures("world_files")
+    def test_memory_scoring_wired_and_shares_outage_and_hard_cap(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        uvicorn_run_calls: list[dict[str, object]],
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-fake")
+        monkeypatch.setattr("peerport.__main__._wire_mate_chat", lambda _ctx: None)
+        monkeypatch.setattr("peerport.__main__._wire_peer_society", lambda _ctx: None)
+
+        main([])
+
+        app = cast("FastAPI", uvicorn_run_calls[0]["app"])
+        scoring_llm = app.state.memory_scoring_llm
+        logbook_llm = app.state.logbook_service.llm
+
+        assert app.state.memory_scoring_memory is not None
+        assert scoring_llm.outage is not None
+        assert scoring_llm.outage is logbook_llm.outage
+        assert scoring_llm.budget.on_hard_cap is not None
+        assert scoring_llm.budget.on_hard_cap is logbook_llm.budget.on_hard_cap
+
+    @pytest.mark.usefixtures("world_files")
+    def test_memory_scoring_not_wired_without_api_key(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        exit_code = main([])
+
+        assert exit_code == 0
+
+
+class TestPeerSocietyWiring:
+    """Finding: decide()/_route() never consulted ConversationEngine.busy.
+
+    `_wire_peer_society` must wire `DecisionEngine.is_busy` against the
+    same `ConversationEngine.busy` set it builds, and thread the
+    configured locale into both engines.
+    """
+
+    def _make_ctx(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, locale: str = "ja"
+    ) -> WireContext:
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-fake")
+        conn = open_db(tmp_path / "peer_society.db")
+        personas = load_personas(REPO_ROOT / "personas")
+        worldmap = WorldMap.load(REPO_ROOT / "data" / "map" / "port.json")
+        simulation = Simulation(
+            worldmap=worldmap,
+            personas=personas,
+            rng=random.Random(0),  # noqa: S311 -- test seed, not security
+        )
+        app = FastAPI()
+        app.state.broadcaster = FakeBroadcaster()
+        return WireContext(
+            app=app,
+            config=Config(locale=locale),
+            conn=conn,
+            personas=personas,
+            simulation=simulation,
+            outage=OutageTracker(),
+            on_hard_cap=lambda: None,
+        )
+
+    def test_locale_threaded_into_both_engines(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        ctx = self._make_ctx(tmp_path, monkeypatch)
+
+        _wire_peer_society(ctx)
+
+        assert ctx.app.state.decision_engine.locale == "ja"
+        assert ctx.app.state.conversation_engine.locale == "ja"
+
+    def test_decision_engine_is_busy_reads_the_conversation_engines_busy_set(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        ctx = self._make_ctx(tmp_path, monkeypatch)
+
+        _wire_peer_society(ctx)
+
+        engine = ctx.app.state.decision_engine
+        conversations = ctx.app.state.conversation_engine
+        assert engine.is_busy is not None
+        assert engine.is_busy("tug") is False
+
+        conversations.busy.add("tug")
+        assert engine.is_busy("tug") is True

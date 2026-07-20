@@ -322,6 +322,23 @@ export class WorldRenderer {
     }
   }
 
+  // Resync on every (re)connect (finding): the snapshot is the
+  // guaranteed first message on every connection (net.js), so a
+  // reconnecting client picks up the current fog/hard-stop status
+  // instead of only ever learning about it from a live `state` frame it
+  // may have missed while disconnected. Reuses `applyStateFrame`'s own
+  // logic rather than duplicating the fog-ramp/tint-lock bookkeeping.
+  applyDegradedSnapshot(frame) {
+    if (frame.fog) {
+      this.applyStateFrame({
+        state: "fog",
+        active: frame.fog.active,
+        status: frame.fog.status,
+      });
+    }
+    this.applyStateFrame({ state: frame.hard_stop ? "hard_stop" : "resumed" });
+  }
+
   showSpeech(peerId, text) {
     const entry = this.peers.get(peerId);
     if (!entry) {
@@ -342,10 +359,16 @@ export class WorldRenderer {
     bubble.addChild(bg, label);
     bubble.position.set(0, -SPRITE_H - label.height);
     // Two-frame pop-in: whole content, no typewriter streaming (REQ-016).
-    bubble.scale.set(0.5);
-    requestAnimationFrame(() =>
-      requestAnimationFrame(() => bubble.scale.set(1)),
-    );
+    // Reduced motion (prototype-design.md §8.3): bubbles are static, so
+    // skip the scale ramp and show the bubble at full size immediately.
+    if (this.reducedMotion) {
+      bubble.scale.set(1);
+    } else {
+      bubble.scale.set(0.5);
+      requestAnimationFrame(() =>
+        requestAnimationFrame(() => bubble.scale.set(1)),
+      );
+    }
     entry.sprite.addChild(bubble);
     entry.bubble = bubble;
     clearTimeout(entry.bubbleTimer);
@@ -424,6 +447,11 @@ export class WorldRenderer {
       // regardless of the actual band while the hard cap holds.
       this.tint.tint = BAND_TINTS.night.color;
       this.tint.alpha = BAND_TINTS.night.alpha;
+    } else if (this.reducedMotion) {
+      // Reduced motion (prototype-design.md §8.3): tint crossfades snap
+      // instantly to the target instead of animating over ~30 world-min.
+      this.tint.tint = this.tintTo.color;
+      this.tint.alpha = this.tintTo.alpha;
     } else {
       const fade = this.tintChangedAt
         ? Math.min((now - this.tintChangedAt) / TINT_CROSSFADE_MS, 1)

@@ -24,7 +24,11 @@
         const bridge = initBridge();
         const world = await initWorld();
         connect({
-          onSnapshot: (frame) => world.applySnapshot(frame),
+          onSnapshot: (frame) => {
+            world.applySnapshot(frame);
+            world.applyDegradedSnapshot(frame);
+            bridge.applyDegradedSnapshot(frame);
+          },
           onDiff: (frame) => world.applyDiff(frame),
           onEvent: (frame) => {
             if (frame.t === "clock") {
@@ -57,7 +61,10 @@
               bridge.applyStateFrame(frame);
             }
           },
-          onDisconnect: () => bridge.setReconnecting(true),
+          onDisconnect: () => {
+            bridge.setReconnecting(true);
+            bridge.resetStreamingChat();
+          },
           onReconnect: () => bridge.setReconnecting(false),
         });
       };
